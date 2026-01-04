@@ -56,7 +56,7 @@ python run.py
 python run.py 8081
 ```
 
-启动后访问 http://localhost:8000
+启动后访问 http://localhost:8080
 
 ### 登录获取 Token
 
@@ -81,7 +81,7 @@ python run.py 8081
 ```
 名称: Kiro Proxy
 API Key: any
-Base URL: http://localhost:8000
+Base URL: http://localhost:8080
 模型: claude-sonnet-4
 ```
 
@@ -90,7 +90,7 @@ Base URL: http://localhost:8000
 ```
 名称: Kiro Proxy
 API Key: any
-Endpoint: http://localhost:8000/v1
+Endpoint: http://localhost:8080/v1
 模型: gpt-4o
 ```
 
@@ -99,7 +99,7 @@ Endpoint: http://localhost:8000/v1
 ```
 名称: Kiro Proxy
 API Key: any
-Base URL: http://localhost:8000
+Base URL: http://localhost:8080
 模型: gemini-2.0-flash
 ```
 
@@ -116,12 +116,12 @@ Base URL: http://localhost:8000
 
 ```bash
 # OpenAI 格式
-curl http://localhost:8000/v1/chat/completions \
+curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "claude-sonnet-4", "messages": [{"role": "user", "content": "Hello"}]}'
 
 # Anthropic 格式
-curl http://localhost:8000/v1/messages \
+curl http://localhost:8080/v1/messages \
   -H "Content-Type: application/json" \
   -H "x-api-key: any" \
   -H "anthropic-version: 2023-06-01" \
@@ -133,7 +133,7 @@ curl http://localhost:8000/v1/messages \
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="not-needed")
 response = client.chat.completions.create(
     model="claude-sonnet-4",
     messages=[{"role": "user", "content": "Hello"}]
@@ -142,6 +142,28 @@ print(response.choices[0].message.content)
 ```
 
 ## 构建
+
+### 项目结构
+
+```
+kiro_proxy/
+├── __init__.py          # 版本信息
+├── config.py            # 配置和模型映射
+├── models.py            # 数据模型
+├── kiro_api.py          # Kiro API 调用
+├── converters.py        # 协议转换
+├── handlers/
+│   ├── anthropic.py     # /v1/messages (支持工具调用)
+│   ├── openai.py        # /v1/chat/completions
+│   ├── gemini.py        # /v1/models/{model}:generateContent
+│   └── admin.py         # 管理 API
+├── web/
+│   └── html.py          # Web UI
+└── main.py              # FastAPI 应用
+run.py                   # 启动脚本
+```
+
+### 构建可执行文件
 
 ```bash
 # 安装构建依赖
