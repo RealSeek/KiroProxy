@@ -34,6 +34,15 @@ async def get_stats():
     return state.get_stats()
 
 
+async def event_logging_batch(request: Request):
+    """接收事件日志批量上报（兼容客户端）"""
+    try:
+        await request.json()
+    except Exception:
+        pass
+    return {"ok": True}
+
+
 async def get_logs(limit: int = Query(100, le=1000)):
     """获取请求日志"""
     logs = list(state.request_logs)[-limit:]

@@ -431,7 +431,7 @@ HTML_SETTINGS = '''
       <p style="font-weight:500;margin-bottom:0.5rem">启用的策略（可多选）：</p>
       <label style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;cursor:pointer">
         <input type="checkbox" id="strategyAutoTruncate" onchange="updateHistoryConfig()">
-        <span><strong>自动截断</strong> - 发送前自动截断历史消息</span>
+        <span><strong>自动截断</strong> - 发送前优先保留最新上下文并摘要前文</span>
       </label>
       <label style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;cursor:pointer">
         <input type="checkbox" id="strategySmartSummary" onchange="updateHistoryConfig()">
@@ -477,6 +477,25 @@ HTML_SETTINGS = '''
           <label style="display:block;font-size:0.875rem;color:var(--muted);margin-bottom:0.25rem">触发摘要阈值（字符）</label>
           <input type="number" id="summaryThreshold" value="100000" min="50000" max="200000" step="10000" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text)" onchange="updateHistoryConfig()">
         </div>
+        <div>
+          <label style="display:block;font-size:0.875rem;color:var(--muted);margin-bottom:0.25rem">摘要缓存</label>
+          <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
+            <input type="checkbox" id="summaryCacheEnabled" onchange="updateHistoryConfig()">
+            <span>启用摘要缓存</span>
+          </label>
+        </div>
+        <div>
+          <label style="display:block;font-size:0.875rem;color:var(--muted);margin-bottom:0.25rem">缓存刷新消息增量</label>
+          <input type="number" id="summaryCacheDeltaMessages" value="3" min="1" max="20" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text)" onchange="updateHistoryConfig()">
+        </div>
+        <div>
+          <label style="display:block;font-size:0.875rem;color:var(--muted);margin-bottom:0.25rem">缓存刷新字符增量</label>
+          <input type="number" id="summaryCacheDeltaChars" value="4000" min="1000" max="50000" step="500" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text)" onchange="updateHistoryConfig()">
+        </div>
+        <div>
+          <label style="display:block;font-size:0.875rem;color:var(--muted);margin-bottom:0.25rem">缓存最大复用秒数</label>
+          <input type="number" id="summaryCacheMaxAge" value="180" min="30" max="3600" step="30" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text)" onchange="updateHistoryConfig()">
+        </div>
       </div>
     </div>
     
@@ -488,7 +507,7 @@ HTML_SETTINGS = '''
     <div style="margin-top:1rem;padding:1rem;background:var(--bg);border-radius:6px">
       <p style="font-size:0.875rem;color:var(--muted)">
         <strong>策略说明：</strong><br>
-        • <strong>自动截断</strong>：每次请求前检查历史消息数量和大小，超限则截断<br>
+        • <strong>自动截断</strong>：每次请求前优先保留最新上下文并摘要前文，必要时按数量/字符截断<br>
         • <strong>智能摘要</strong>：用 AI 生成早期对话摘要，保留关键信息（需额外 API 调用，增加延迟）<br>
         • <strong>错误重试</strong>：收到长度超限错误后，截断历史消息并自动重试<br>
         • <strong>预估检测</strong>：发送前估算 token 数量，超过阈值则预先截断<br>
@@ -1313,6 +1332,10 @@ async function loadHistoryConfig(){
     $('#maxRetries').value=d.max_retries||2;
     $('#summaryKeepRecent').value=d.summary_keep_recent||10;
     $('#summaryThreshold').value=d.summary_threshold||100000;
+    $('#summaryCacheEnabled').checked=d.summary_cache_enabled!==false;
+    $('#summaryCacheDeltaMessages').value=d.summary_cache_min_delta_messages||3;
+    $('#summaryCacheDeltaChars').value=d.summary_cache_min_delta_chars||4000;
+    $('#summaryCacheMaxAge').value=d.summary_cache_max_age_seconds||180;
     $('#addWarningHeader').checked=d.add_warning_header!==false;
     // 显示/隐藏摘要选项
     $('#summaryOptions').style.display=$('#strategySmartSummary').checked?'block':'none';
@@ -1336,6 +1359,10 @@ async function updateHistoryConfig(){
     max_retries:parseInt($('#maxRetries').value)||2,
     summary_keep_recent:parseInt($('#summaryKeepRecent').value)||10,
     summary_threshold:parseInt($('#summaryThreshold').value)||100000,
+    summary_cache_enabled:$('#summaryCacheEnabled').checked,
+    summary_cache_min_delta_messages:parseInt($('#summaryCacheDeltaMessages').value)||3,
+    summary_cache_min_delta_chars:parseInt($('#summaryCacheDeltaChars').value)||4000,
+    summary_cache_max_age_seconds:parseInt($('#summaryCacheMaxAge').value)||180,
     add_warning_header:$('#addWarningHeader').checked
   };
   try{

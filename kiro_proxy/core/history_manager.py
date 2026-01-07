@@ -8,9 +8,71 @@
 """
 import json
 import httpx
+import time
 from typing import List, Dict, Any, Tuple, Optional, Callable
 from dataclasses import dataclass, field
+from collections import OrderedDict
 from enum import Enum
+
+
+@dataclass
+class SummaryCacheEntry:
+    summary: str
+    old_history_count: int
+    old_history_chars: int
+    updated_at: float
+
+
+class SummaryCache:
+    """轻量摘要缓存（按会话）"""
+
+    def __init__(self, max_entries: int = 128):
+        self._entries: "OrderedDict[str, SummaryCacheEntry]" = OrderedDict()
+        self._max_entries = max_entries
+
+    def get(
+        self,
+        key: str,
+        old_history_count: int,
+        old_history_chars: int,
+        min_delta_messages: int,
+        min_delta_chars: int,
+        max_age_seconds: int
+    ) -> Optional[str]:
+        entry = self._entries.get(key)
+        if not entry:
+            return None
+
+        now = time.time()
+        if max_age_seconds > 0 and now - entry.updated_at > max_age_seconds:
+            self._entries.pop(key, None)
+            return None
+
+        if old_history_count - entry.old_history_count >= min_delta_messages:
+            return None
+
+        if old_history_chars - entry.old_history_chars >= min_delta_chars:
+            return None
+
+        self._entries.move_to_end(key)
+        return entry.summary
+
+    def set(
+        self,
+        key: str,
+        summary: str,
+        old_history_count: int,
+        old_history_chars: int
+    ):
+        self._entries[key] = SummaryCacheEntry(
+            summary=summary,
+            old_history_count=old_history_count,
+            old_history_chars=old_history_chars,
+            updated_at=time.time()
+        )
+        self._entries.move_to_end(key)
+        if len(self._entries) > self._max_entries:
+            self._entries.popitem(last=False)
 
 
 class TruncateStrategy(str, Enum):
@@ -38,13 +100,19 @@ class HistoryConfig:
     summary_max_length: int = 2000   # 摘要最大长度
     
     # 错误重试配置
-    retry_max_messages: int = 15     # 重试时保留的消息数
+    retry_max_messages: int = 20     # 重试时保留的消息数
     max_retries: int = 2             # 最大重试次数
     
     # 预估配置
     estimate_threshold: int = 180000  # 预估阈值（字符数）
     chars_per_token: float = 3.0      # 每 token 约等于多少字符
-    
+
+    # 摘要缓存（保守策略）
+    summary_cache_enabled: bool = True          # 是否启用摘要缓存
+    summary_cache_min_delta_messages: int = 3   # 旧历史新增 N 条后刷新摘要
+    summary_cache_min_delta_chars: int = 4000   # 旧历史新增字符数阈值
+    summary_cache_max_age_seconds: int = 180    # 摘要最大复用时间
+
     # 是否添加截断警告
     add_warning_header: bool = True
     
@@ -60,6 +128,10 @@ class HistoryConfig:
             "max_retries": self.max_retries,
             "estimate_threshold": self.estimate_threshold,
             "chars_per_token": self.chars_per_token,
+            "summary_cache_enabled": self.summary_cache_enabled,
+            "summary_cache_min_delta_messages": self.summary_cache_min_delta_messages,
+            "summary_cache_min_delta_chars": self.summary_cache_min_delta_chars,
+            "summary_cache_max_age_seconds": self.summary_cache_max_age_seconds,
             "add_warning_header": self.add_warning_header,
         }
     
@@ -77,17 +149,25 @@ class HistoryConfig:
             max_retries=data.get("max_retries", 2),
             estimate_threshold=data.get("estimate_threshold", 180000),
             chars_per_token=data.get("chars_per_token", 3.0),
+            summary_cache_enabled=data.get("summary_cache_enabled", True),
+            summary_cache_min_delta_messages=data.get("summary_cache_min_delta_messages", 3),
+            summary_cache_min_delta_chars=data.get("summary_cache_min_delta_chars", 4000),
+            summary_cache_max_age_seconds=data.get("summary_cache_max_age_seconds", 180),
             add_warning_header=data.get("add_warning_header", True),
         )
+
+
+_summary_cache = SummaryCache()
 
 
 class HistoryManager:
     """历史消息管理器"""
     
-    def __init__(self, config: HistoryConfig = None):
+    def __init__(self, config: HistoryConfig = None, cache_key: Optional[str] = None):
         self.config = config or HistoryConfig()
         self._truncated = False
         self._truncate_info = ""
+        self.cache_key = cache_key
     
     @property
     def was_truncated(self) -> bool:
@@ -103,6 +183,15 @@ class HistoryManager:
         """重置状态"""
         self._truncated = False
         self._truncate_info = ""
+
+    def set_cache_key(self, cache_key: Optional[str]):
+        """设置摘要缓存 key"""
+        self.cache_key = cache_key
+
+    def _summary_cache_key(self, target_count: int) -> Optional[str]:
+        if not self.cache_key:
+            return None
+        return f"{self.cache_key}:{target_count}"
     
     def estimate_tokens(self, text: str) -> int:
         """估算 token 数量"""
@@ -116,6 +205,12 @@ class HistoryManager:
         """
         char_count = len(json.dumps(history, ensure_ascii=False))
         return len(history), char_count
+
+    def estimate_request_chars(self, history: List[dict], user_content: str = "") -> Tuple[int, int, int]:
+        """估算请求字符数 (history_chars, user_chars, total_chars)"""
+        history_chars = len(json.dumps(history, ensure_ascii=False))
+        user_chars = len(user_content or "")
+        return history_chars, user_chars, history_chars + user_chars
     
     def truncate_by_count(self, history: List[dict], max_count: int) -> List[dict]:
         """按消息数量截断"""
@@ -172,13 +267,153 @@ class HistoryManager:
         """格式化历史消息用于生成摘要"""
         lines = []
         for msg in history:
-            role = msg.get("role", "unknown")
-            content = self._extract_text(msg.get("content", ""))
+            role = "unknown"
+            content = ""
+            if "userInputMessage" in msg:
+                role = "user"
+                content = msg.get("userInputMessage", {}).get("content", "")
+            elif "assistantResponseMessage" in msg:
+                role = "assistant"
+                content = msg.get("assistantResponseMessage", {}).get("content", "")
+            else:
+                role = msg.get("role", "unknown")
+                content = self._extract_text(msg.get("content", ""))
             # 截断过长的单条消息
             if len(content) > 500:
                 content = content[:500] + "..."
             lines.append(f"[{role}]: {content}")
         return "\n".join(lines)
+
+    def _entry_kind(self, msg: dict) -> str:
+        """提取消息类型"""
+        if "userInputMessage" in msg:
+            return "U"
+        if "assistantResponseMessage" in msg:
+            return "A"
+        role = msg.get("role")
+        if role == "user":
+            return "U"
+        if role == "assistant":
+            return "A"
+        return "?"
+
+    def summarize_history_structure(self, history: List[dict], max_items: int = 12) -> str:
+        """生成历史结构摘要"""
+        if not history:
+            return "len=0"
+
+        kinds = [self._entry_kind(msg) for msg in history]
+        counts = {"U": 0, "A": 0, "?": 0}
+        for k in kinds:
+            counts[k] = counts.get(k, 0) + 1
+
+        alternating = True
+        for i in range(1, len(kinds)):
+            if kinds[i] == kinds[i - 1] or kinds[i] == "?" or kinds[i - 1] == "?":
+                alternating = False
+                break
+
+        tool_uses = 0
+        tool_results = 0
+        for msg in history:
+            if "assistantResponseMessage" in msg:
+                tool_uses += len(msg["assistantResponseMessage"].get("toolUses", []) or [])
+            if "userInputMessage" in msg:
+                ctx = msg["userInputMessage"].get("userInputMessageContext", {})
+                tool_results += len(ctx.get("toolResults", []) or [])
+
+        if len(kinds) <= max_items:
+            seq = "".join(kinds)
+        else:
+            head_len = max_items // 2
+            tail_len = max_items - head_len
+            seq = f"{''.join(kinds[:head_len])}...{''.join(kinds[-tail_len:])}"
+
+        return (
+            f"len={len(history)} seq={seq} alt={'yes' if alternating else 'no'} "
+            f"U={counts['U']} A={counts['A']} ?={counts['?']} "
+            f"tool_uses={tool_uses} tool_results={tool_results}"
+        )
+
+    def _build_summary_history(
+        self,
+        summary: str,
+        recent_history: List[dict],
+        debug_label: Optional[str] = None
+    ) -> List[dict]:
+        """用摘要替换旧历史，保留最近完整上下文"""
+        if any("userInputMessage" in h or "assistantResponseMessage" in h for h in recent_history):
+            if recent_history and "assistantResponseMessage" in recent_history[0]:
+                recent_history = recent_history[1:]
+
+            # 过滤孤立的 toolResults（没有对应 toolUse）
+            tool_use_ids = set()
+            for msg in recent_history:
+                if "assistantResponseMessage" in msg:
+                    for tu in msg["assistantResponseMessage"].get("toolUses", []) or []:
+                        tu_id = tu.get("toolUseId")
+                        if tu_id:
+                            tool_use_ids.add(tu_id)
+
+            if tool_use_ids:
+                for msg in recent_history:
+                    if "userInputMessage" in msg:
+                        ctx = msg.get("userInputMessage", {}).get("userInputMessageContext", {})
+                        results = ctx.get("toolResults")
+                        if results:
+                            filtered = [r for r in results if r.get("toolUseId") in tool_use_ids]
+                            if filtered:
+                                ctx["toolResults"] = filtered
+                            else:
+                                ctx.pop("toolResults", None)
+                            if not ctx:
+                                msg["userInputMessage"].pop("userInputMessageContext", None)
+            else:
+                for msg in recent_history:
+                    if "userInputMessage" in msg:
+                        msg["userInputMessage"].pop("userInputMessageContext", None)
+
+            model_id = "claude-sonnet-4"
+            for msg in reversed(recent_history):
+                if "userInputMessage" in msg:
+                    model_id = msg["userInputMessage"].get("modelId", model_id)
+                    break
+                if "assistantResponseMessage" in msg:
+                    model_id = msg["assistantResponseMessage"].get("modelId", model_id)
+                    break
+
+            summary_msg = {
+                "userInputMessage": {
+                    "content": f"[Earlier conversation summary]\n{summary}\n\n[Continuing from recent messages...]",
+                    "modelId": model_id,
+                    "origin": "AI_EDITOR",
+                }
+            }
+            result = [summary_msg]
+            result.append({
+                "assistantResponseMessage": {
+                    "content": "I understand the context. Let's continue.",
+                    "toolUses": [],
+                }
+            })
+            result.extend(recent_history)
+            if debug_label:
+                print(f"[HistoryManager] {debug_label}: {self.summarize_history_structure(result)}")
+            return result
+
+        summary_msg = {
+            "role": "user",
+            "content": f"[Earlier conversation summary]\n{summary}\n\n[Continuing from recent messages...]"
+        }
+        result = [summary_msg]
+        result.append({
+            "role": "assistant",
+            "content": "I understand the context. Let's continue."
+        })
+        result.extend(recent_history)
+        if debug_label:
+            print(f"[HistoryManager] {debug_label}: {self.summarize_history_structure(result)}")
+        return result
     
     async def generate_summary(self, history: List[dict], api_caller: Callable) -> Optional[str]:
         """生成历史消息摘要
@@ -251,26 +486,118 @@ class HistoryManager:
             self._truncated = True
             self._truncate_info = f"摘要生成失败，回退截断: {len(history)} -> {len(recent_history)} 条消息"
             return recent_history
-        
+
         # 构建带摘要的历史
-        summary_msg = {
-            "role": "user",
-            "content": f"[Earlier conversation summary]\n{summary}\n\n[Continuing from recent messages...]"
-        }
-        
-        # 确保消息交替正确
-        result = [summary_msg]
-        # 添加一个 assistant 响应确保交替
-        result.append({
-            "role": "assistant",
-            "content": "I understand the context. Let's continue."
-        })
-        result.extend(recent_history)
+        result = self._build_summary_history(summary, recent_history, "智能摘要结构")
         
         self._truncated = True
         self._truncate_info = f"智能摘要: {len(history)} -> {len(result)} 条消息 (摘要 {len(summary)} 字符)"
         
         return result
+
+    async def compress_before_auto_truncate(
+        self,
+        history: List[dict],
+        api_caller: Callable
+    ) -> List[dict]:
+        """在自动截断前生成摘要，保留最近完整上下文"""
+        if len(history) <= 1:
+            return history
+
+        # 预留 2 条消息（summary + assistant 占位）
+        if self.config.max_messages <= 2:
+            return history
+
+        keep_recent = min(len(history) - 1, self.config.max_messages - 2)
+        if keep_recent <= 0:
+            return history
+
+        old_history = history[:-keep_recent]
+        recent_history = history[-keep_recent:]
+
+        summary = await self.generate_summary(old_history, api_caller)
+        if not summary:
+            return history
+
+        result = self._build_summary_history(summary, recent_history, "自动截断前摘要结构")
+
+        self._truncated = True
+        self._truncate_info = f"自动截断前摘要: {len(history)} -> {len(result)} 条消息 (摘要 {len(summary)} 字符)"
+        
+        return result
+
+    async def handle_length_error_async(
+        self,
+        history: List[dict],
+        retry_count: int = 0,
+        api_caller: Optional[Callable] = None
+    ) -> Tuple[List[dict], bool]:
+        """处理长度超限错误（优先摘要旧历史再重试）
+
+        Args:
+            history: 历史消息
+            retry_count: 当前重试次数
+            api_caller: API 调用函数，用于生成摘要
+
+        Returns:
+            (truncated_history, should_retry)
+        """
+        if TruncateStrategy.ERROR_RETRY not in self.config.strategies:
+            return history, False
+
+        if retry_count >= self.config.max_retries:
+            return history, False
+
+        if not history:
+            return history, False
+
+        self.reset()
+
+        factor = 1.0 - (retry_count * 0.3)
+        target_count = max(5, int(self.config.retry_max_messages * factor))
+
+        if len(history) <= target_count:
+            return history, False
+
+        if api_caller:
+            old_history = history[:-target_count]
+            recent_history = history[-target_count:]
+            cache_key = self._summary_cache_key(target_count)
+            old_count = len(old_history)
+            old_chars = len(json.dumps(old_history, ensure_ascii=False))
+            cached = None
+            if cache_key and self.config.summary_cache_enabled:
+                cached = _summary_cache.get(
+                    cache_key,
+                    old_count,
+                    old_chars,
+                    self.config.summary_cache_min_delta_messages,
+                    self.config.summary_cache_min_delta_chars,
+                    self.config.summary_cache_max_age_seconds
+                )
+            if cached:
+                result = self._build_summary_history(cached, recent_history, "错误重试摘要缓存结构")
+                self._truncated = True
+                self._truncate_info = f"错误重试摘要(缓存) (第 {retry_count + 1} 次): {len(history)} -> {len(result)} 条消息"
+                return result, True
+
+            summary = await self.generate_summary(old_history, api_caller)
+            if summary:
+                result = self._build_summary_history(summary, recent_history, "错误重试摘要结构")
+                self._truncated = True
+                self._truncate_info = f"错误重试摘要 (第 {retry_count + 1} 次): {len(history)} -> {len(result)} 条消息 (摘要 {len(summary)} 字符)"
+                if cache_key and self.config.summary_cache_enabled:
+                    _summary_cache.set(cache_key, summary, old_count, old_chars)
+                return result, True
+
+        # 摘要失败或无 api_caller，回退到按数量截断
+        self.reset()
+        truncated = self.truncate_by_count(history, target_count)
+        if len(truncated) < len(history):
+            self._truncate_info = f"错误重试截断 (第 {retry_count + 1} 次): {len(history)} -> {len(truncated)} 条消息"
+            return truncated, True
+
+        return history, False
     
     def should_pre_truncate(self, history: List[dict], user_content: str) -> bool:
         """检查是否需要预截断"""
@@ -281,12 +608,36 @@ class HistoryManager:
         return total_chars > self.config.estimate_threshold
     
     def should_summarize(self, history: List[dict]) -> bool:
+        """检查是否需要摘要（智能摘要或自动截断前摘要）"""
+        return self.should_smart_summarize(history) or self.should_auto_truncate_summarize(history)
+
+    def should_pre_summary_for_error_retry(self, history: List[dict], user_content: str = "") -> bool:
+        """错误重试触发前的预摘要判定"""
+        if TruncateStrategy.ERROR_RETRY not in self.config.strategies:
+            return False
+        if not history:
+            return False
+        _, _, total_chars = self.estimate_request_chars(history, user_content)
+        return total_chars > self.config.estimate_threshold
+
+    def should_smart_summarize(self, history: List[dict]) -> bool:
         """检查是否需要智能摘要"""
         if TruncateStrategy.SMART_SUMMARY not in self.config.strategies:
             return False
-        
+
         total_chars = len(json.dumps(history, ensure_ascii=False))
         return total_chars > self.config.summary_threshold and len(history) > self.config.summary_keep_recent
+
+    def should_auto_truncate_summarize(self, history: List[dict]) -> bool:
+        """检查是否需要自动截断前摘要"""
+        if TruncateStrategy.AUTO_TRUNCATE not in self.config.strategies:
+            return False
+
+        if len(history) <= 1:
+            return False
+
+        total_chars = len(json.dumps(history, ensure_ascii=False))
+        return len(history) > self.config.max_messages or total_chars > self.config.max_chars
     
     def pre_process(self, history: List[dict], user_content: str = "") -> List[dict]:
         """预处理历史消息（发送前，同步版本）
@@ -336,12 +687,59 @@ class HistoryManager:
             return history
         
         result = history
+
+        # 错误重试预摘要（避免首次请求直接超限）
+        pre_summarized = False
+        if TruncateStrategy.ERROR_RETRY in self.config.strategies and api_caller:
+            if self.should_pre_summary_for_error_retry(result, user_content):
+                target_count = self.config.retry_max_messages
+                if len(result) > target_count:
+                    old_history = result[:-target_count]
+                    recent_history = result[-target_count:]
+                    cache_key = self._summary_cache_key(target_count)
+                    old_count = len(old_history)
+                    old_chars = len(json.dumps(old_history, ensure_ascii=False))
+                    cached = None
+                    if cache_key and self.config.summary_cache_enabled:
+                        cached = _summary_cache.get(
+                            cache_key,
+                            old_count,
+                            old_chars,
+                            self.config.summary_cache_min_delta_messages,
+                            self.config.summary_cache_min_delta_chars,
+                            self.config.summary_cache_max_age_seconds
+                        )
+                    if cached:
+                        result = self._build_summary_history(cached, recent_history, "错误重试预摘要缓存结构")
+                        self._truncated = True
+                        self._truncate_info = f"错误重试预摘要(缓存): {len(history)} -> {len(result)} 条消息"
+                        pre_summarized = True
+                    else:
+                        summary = await self.generate_summary(old_history, api_caller)
+                        if summary:
+                            result = self._build_summary_history(summary, recent_history, "错误重试预摘要结构")
+                            self._truncated = True
+                            self._truncate_info = f"错误重试预摘要: {len(history)} -> {len(result)} 条消息 (摘要 {len(summary)} 字符)"
+                            pre_summarized = True
+                            if cache_key and self.config.summary_cache_enabled:
+                                _summary_cache.set(cache_key, summary, old_count, old_chars)
         
         # 策略 2: 智能摘要（优先级最高）
+        summary_applied = False
         if TruncateStrategy.SMART_SUMMARY in self.config.strategies and api_caller:
-            if self.should_summarize(result):
+            if self.should_smart_summarize(result) and not pre_summarized:
                 result = await self.compress_with_summary(result, api_caller)
+                summary_applied = True
                 # 摘要后如果还是太长，继续其他策略
+
+        # 自动截断前摘要（保留最新完整上下文）
+        if (
+            TruncateStrategy.AUTO_TRUNCATE in self.config.strategies
+            and api_caller
+            and not summary_applied
+            and self.should_auto_truncate_summarize(result)
+        ):
+            result = await self.compress_before_auto_truncate(result, api_caller)
         
         # 策略 1: 自动截断
         if TruncateStrategy.AUTO_TRUNCATE in self.config.strategies:

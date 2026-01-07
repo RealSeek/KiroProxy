@@ -139,6 +139,10 @@ async def gemini_generate(model_name: str, request: Request):
 async def api_status():
     return await admin.get_status()
 
+@app.post("/api/event_logging/batch")
+async def api_event_logging_batch(request: Request):
+    return await admin.event_logging_batch(request)
+
 
 @app.get("/api/stats")
 async def api_stats():

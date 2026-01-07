@@ -70,26 +70,38 @@ async def handle_generate_content(model_name: str, request: Request):
     )
     
     # 历史消息预处理
-    history_manager = HistoryManager(get_history_config())
+    history_manager = HistoryManager(get_history_config(), cache_key=session_id)
     
-    # 检查是否需要智能摘要
-    if history_manager.should_summarize(history):
-        async def api_caller(prompt: str) -> str:
-            req = build_kiro_request(prompt, "claude-haiku-4.5", [])
-            try:
-                async with httpx.AsyncClient(verify=False, timeout=60) as client:
-                    resp = await client.post(KIRO_API_URL, json=req, headers=headers)
-                    if resp.status_code == 200:
-                        return parse_event_stream(resp.content)
-            except Exception as e:
-                print(f"[Summary] API 调用失败: {e}")
-            return ""
-        history = await history_manager.pre_process_async(history, user_content, api_caller)
+    async def call_summary(prompt: str) -> str:
+        req = build_kiro_request(prompt, "claude-haiku-4.5", [])
+        try:
+            async with httpx.AsyncClient(verify=False, timeout=60) as client:
+                resp = await client.post(KIRO_API_URL, json=req, headers=headers)
+                if resp.status_code == 200:
+                    return parse_event_stream(resp.content)
+        except Exception as e:
+            print(f"[Summary] API 调用失败: {e}")
+        return ""
+
+    # 检查是否需要智能摘要或错误重试预摘要
+    if history_manager.should_summarize(history) or history_manager.should_pre_summary_for_error_retry(history, user_content):
+        history = await history_manager.pre_process_async(history, user_content, call_summary)
     else:
         history = history_manager.pre_process(history, user_content)
     
     if history_manager.was_truncated:
         print(f"[Gemini] {history_manager.truncate_info}")
+
+    async def call_summary(prompt: str) -> str:
+        req = build_kiro_request(prompt, "claude-haiku-4.5", [])
+        try:
+            async with httpx.AsyncClient(verify=False, timeout=60) as client:
+                resp = await client.post(KIRO_API_URL, json=req, headers=headers)
+                if resp.status_code == 200:
+                    return parse_event_stream(resp.content)
+        except Exception as e:
+            print(f"[Summary] API 调用失败: {e}")
+        return ""
     
     # 构建 Kiro 请求
     kiro_request = build_kiro_request(
@@ -166,7 +178,13 @@ async def handle_generate_content(model_name: str, request: Request):
                     
                     # 检查是否为内容长度超限错误
                     if error.type == ErrorType.CONTENT_TOO_LONG:
-                        truncated_history, should_retry = history_manager.handle_length_error(history, retry)
+                        history_chars, user_chars, total_chars = history_manager.estimate_request_chars(
+                            history, user_content
+                        )
+                        print(f"[Gemini] 内容长度超限: history={history_chars} chars, user={user_chars} chars, total={total_chars} chars")
+                        truncated_history, should_retry = await history_manager.handle_length_error_async(
+                            history, retry, call_summary
+                        )
                         if should_retry:
                             print(f"[Gemini] 内容长度超限，{history_manager.truncate_info}")
                             history = truncated_history
@@ -176,6 +194,8 @@ async def handle_generate_content(model_name: str, request: Request):
                                 tool_results=tool_results if tool_results else None
                             )
                             continue
+                        else:
+                            print(f"[Gemini] 内容长度超限但未重试: retry={retry}/{max_retries}")
                     
                     raise HTTPException(resp.status_code, error.user_message)
                 

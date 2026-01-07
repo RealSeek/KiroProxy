@@ -69,8 +69,9 @@
 
 ### v1.6.0 功能
 - **历史消息管理** - 4 种策略处理对话长度限制，可自由组合
-  - 自动截断：发送前按数量/字符数截断
+  - 自动截断：发送前优先保留最新上下文并摘要前文，必要时按数量/字符数截断
   - 智能摘要：用 AI 生成早期对话摘要，保留关键信息
+  - 摘要缓存：历史变化不大时复用最近摘要，减少重复 LLM 调用（默认启用）
   - 错误重试：遇到长度错误时自动截断重试（默认启用）
   - 预估检测：预估 token 数量，超限预先截断
 - **Gemini 工具调用** - 完整支持 functionDeclarations/functionCall/functionResponse
@@ -118,8 +119,15 @@ Input is too long. (CONTENT_LENGTH_EXCEEDS_THRESHOLD)
 
 - **错误重试**（默认）：遇到长度错误时自动截断并重试
 - **智能摘要**：用 AI 生成早期对话摘要，保留关键信息
-- **自动截断**：每次请求前按数量/字符数截断
+- **摘要缓存**（默认）：历史变化不大时复用最近摘要，减少重复 LLM 调用
+- **自动截断**：每次请求前优先保留最新上下文并摘要前文，必要时按数量/字符数截断
 - **预估检测**：预估 token 数量，超限预先截断
+
+摘要缓存可通过以下配置项调整（默认值）：
+- `summary_cache_enabled`: `true`
+- `summary_cache_min_delta_messages`: `3`
+- `summary_cache_min_delta_chars`: `4000`
+- `summary_cache_max_age_seconds`: `180`
 
 #### 手动处理
 

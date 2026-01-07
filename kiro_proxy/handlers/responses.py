@@ -360,7 +360,7 @@ async def handle_responses(request: Request):
     from ..converters import fix_history_alternation
     history = fix_history_alternation(history)
     
-    history_manager = HistoryManager(get_history_config())
+    history_manager = HistoryManager(get_history_config(), cache_key=session_id)
     history = history_manager.pre_process(history, user_content)
     
     kiro_tools = _convert_tools_to_kiro(tools)

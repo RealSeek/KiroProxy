@@ -178,13 +178,12 @@ async def handle_messages(request: Request):
     user_content, history, tool_results = convert_anthropic_messages_to_kiro(messages, system)
     
     # 历史消息预处理
-    history_manager = HistoryManager(get_history_config())
+    history_manager = HistoryManager(get_history_config(), cache_key=session_id)
     
-    # 检查是否需要智能摘要
-    if history_manager.should_summarize(history):
-        # 创建 API 调用函数
-        async def api_caller(prompt: str) -> str:
-            return await _call_kiro_for_summary(prompt, account, headers)
+    # 检查是否需要智能摘要或错误重试预摘要
+    async def api_caller(prompt: str) -> str:
+        return await _call_kiro_for_summary(prompt, account, headers)
+    if history_manager.should_summarize(history) or history_manager.should_pre_summary_for_error_retry(history, user_content):
         history = await history_manager.pre_process_async(history, user_content, api_caller)
     else:
         history = history_manager.pre_process(history, user_content)
@@ -304,7 +303,15 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                             
                             # 检查是否为内容长度超限错误，尝试截断重试
                             if error_obj.type == ErrorType.CONTENT_TOO_LONG:
-                                truncated_history, should_retry = history_manager.handle_length_error(history, retry_count)
+                                history_chars, user_chars, total_chars = history_manager.estimate_request_chars(
+                                    history, user_content
+                                )
+                                print(f"[Stream] 内容长度超限: history={history_chars} chars, user={user_chars} chars, total={total_chars} chars")
+                                async def api_caller(prompt: str) -> str:
+                                    return await _call_kiro_for_summary(prompt, current_account, headers)
+                                truncated_history, should_retry = await history_manager.handle_length_error_async(
+                                    history, retry_count, api_caller
+                                )
                                 if should_retry:
                                     print(f"[Stream] 内容长度超限，{history_manager.truncate_info}")
                                     history = truncated_history
@@ -478,6 +485,7 @@ async def _handle_non_stream(kiro_request, headers, account, model, log_id, star
 
                 if response.status_code != 200:
                     error_msg = response.text
+                    print(f"[NonStream] Kiro API Error {response.status_code}: {error_msg[:500]}")
                     
                     # 使用统一的错误处理
                     status, error_type, error_message, error_obj = _handle_kiro_error(
@@ -495,12 +503,22 @@ async def _handle_non_stream(kiro_request, headers, account, model, log_id, star
                     
                     # 检查是否为内容长度超限错误，尝试截断重试
                     if error_obj.type == ErrorType.CONTENT_TOO_LONG and history_manager:
-                        truncated_history, should_retry = history_manager.handle_length_error(history, retry)
+                        history_chars, user_chars, total_chars = history_manager.estimate_request_chars(
+                            history, user_content
+                        )
+                        print(f"[NonStream] 内容长度超限: history={history_chars} chars, user={user_chars} chars, total={total_chars} chars")
+                        async def api_caller(prompt: str) -> str:
+                            return await _call_kiro_for_summary(prompt, current_account, headers)
+                        truncated_history, should_retry = await history_manager.handle_length_error_async(
+                            history, retry, api_caller
+                        )
                         if should_retry:
                             print(f"[NonStream] 内容长度超限，{history_manager.truncate_info}")
                             history = truncated_history
                             kiro_request = build_kiro_request(user_content, model, history, kiro_tools, images, tool_results)
                             continue
+                        else:
+                            print(f"[NonStream] 内容长度超限但未重试: retry={retry}/{max_retries}")
                     
                     if flow_id:
                         flow_monitor.fail_flow(flow_id, error_type, error_message, status, error_msg)
