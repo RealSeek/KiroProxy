@@ -30,7 +30,7 @@ class Account:
         """检查账号是否可用"""
         if not self.enabled:
             return False
-        if self.status in (CredentialStatus.DISABLED, CredentialStatus.UNHEALTHY):
+        if self.status in (CredentialStatus.DISABLED, CredentialStatus.UNHEALTHY, CredentialStatus.SUSPENDED):
             return False
         if not quota_manager.is_available(self.id):
             return False

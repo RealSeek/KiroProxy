@@ -3,6 +3,7 @@ import json
 import uuid
 import time
 import hashlib
+import asyncio
 import httpx
 from fastapi import Request, HTTPException
 
@@ -10,6 +11,8 @@ from ..config import KIRO_API_URL, map_model_name
 from ..core import state, is_retryable_error
 from ..core.state import RequestLog
 from ..core.history_manager import HistoryManager, get_history_config, is_content_length_error
+from ..core.error_handler import classify_error, ErrorType, format_error_log
+from ..core.rate_limiter import get_rate_limiter
 from ..kiro_api import build_headers, build_kiro_request, parse_event_stream, parse_event_stream_full, is_quota_exceeded_error
 from ..converters import convert_gemini_contents_to_kiro, convert_kiro_response_to_gemini, convert_gemini_tools_to_kiro
 
@@ -53,6 +56,13 @@ async def handle_generate_content(model_name: str, request: Request):
         profile_arn=creds.profile_arn if creds else None,
         client_id=creds.client_id if creds else None
     )
+    
+    # 限速检查
+    rate_limiter = get_rate_limiter()
+    can_request, wait_seconds, reason = rate_limiter.can_request(account.id)
+    if not can_request:
+        print(f"[Gemini] 限速: {reason}")
+        await asyncio.sleep(wait_seconds)
     
     # 转换消息格式
     user_content, history, tool_results, kiro_tools = convert_gemini_contents_to_kiro(
@@ -130,8 +140,32 @@ async def handle_generate_content(model_name: str, request: Request):
                 if resp.status_code != 200:
                     error_msg = resp.text
                     
+                    # 使用统一的错误处理
+                    error = classify_error(resp.status_code, error_msg)
+                    print(format_error_log(error, current_account.id))
+                    
+                    # 账号封禁 - 禁用账号
+                    if error.should_disable_account:
+                        current_account.enabled = False
+                        from ..credential import CredentialStatus
+                        current_account.status = CredentialStatus.SUSPENDED
+                        print(f"[Gemini] 账号 {current_account.id} 已被禁用 (封禁)")
+                    
+                    # 配额超限 - 标记冷却
+                    if error.type == ErrorType.RATE_LIMITED:
+                        current_account.mark_quota_exceeded(error_msg[:100])
+                    
+                    # 尝试切换账号
+                    if error.should_switch_account:
+                        next_account = state.get_next_available_account(current_account.id)
+                        if next_account and retry < max_retries:
+                            print(f"[Gemini] 切换账号: {current_account.id} -> {next_account.id}")
+                            current_account = next_account
+                            headers["Authorization"] = f"Bearer {current_account.get_token()}"
+                            continue
+                    
                     # 检查是否为内容长度超限错误
-                    if is_content_length_error(resp.status_code, error_msg):
+                    if error.type == ErrorType.CONTENT_TOO_LONG:
                         truncated_history, should_retry = history_manager.handle_length_error(history, retry)
                         if should_retry:
                             print(f"[Gemini] 内容长度超限，{history_manager.truncate_info}")
@@ -143,12 +177,13 @@ async def handle_generate_content(model_name: str, request: Request):
                             )
                             continue
                     
-                    raise HTTPException(resp.status_code, resp.text)
+                    raise HTTPException(resp.status_code, error.user_message)
                 
                 # 使用完整解析以支持工具调用
                 result = parse_event_stream_full(resp.content)
                 current_account.request_count += 1
                 current_account.last_used = time.time()
+                rate_limiter.record_request(current_account.id)
                 break
                 
         except HTTPException:

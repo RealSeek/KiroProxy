@@ -312,6 +312,35 @@ API Key: any
 HTML_SETTINGS = '''
 <div class="panel" id="settings">
   <div class="card">
+    <h3>请求限速 <button class="secondary small" onclick="loadRateLimitConfig()">刷新</button></h3>
+    <p style="color:var(--muted);font-size:0.875rem;margin-bottom:1rem">
+      通过限制请求频率降低账号封禁风险
+    </p>
+    
+    <label style="display:flex;align-items:center;gap:0.5rem;margin-bottom:1rem;cursor:pointer">
+      <input type="checkbox" id="rateLimitEnabled" onchange="updateRateLimitConfig()">
+      <span><strong>启用限速</strong></span>
+    </label>
+    
+    <div id="rateLimitOptions" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;margin-bottom:1rem">
+      <div>
+        <label style="display:block;font-size:0.875rem;color:var(--muted);margin-bottom:0.25rem">最小请求间隔（秒）</label>
+        <input type="number" id="minRequestInterval" value="1.0" min="0" max="10" step="0.5" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text)" onchange="updateRateLimitConfig()">
+      </div>
+      <div>
+        <label style="display:block;font-size:0.875rem;color:var(--muted);margin-bottom:0.25rem">每账号每分钟最大请求</label>
+        <input type="number" id="maxRequestsPerMinute" value="30" min="1" max="100" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text)" onchange="updateRateLimitConfig()">
+      </div>
+      <div>
+        <label style="display:block;font-size:0.875rem;color:var(--muted);margin-bottom:0.25rem">全局每分钟最大请求</label>
+        <input type="number" id="globalMaxRequestsPerMinute" value="60" min="1" max="200" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text)" onchange="updateRateLimitConfig()">
+      </div>
+    </div>
+    
+    <div id="rateLimitStats" style="padding:0.75rem;background:var(--bg);border-radius:6px;font-size:0.875rem"></div>
+  </div>
+
+  <div class="card">
     <h3>历史消息管理 <button class="secondary small" onclick="loadHistoryConfig()">刷新</button></h3>
     <p style="color:var(--muted);font-size:0.875rem;margin-bottom:1rem">
       处理 Kiro API 的输入长度限制（CONTENT_LENGTH_EXCEEDS_THRESHOLD 错误）
@@ -386,11 +415,6 @@ HTML_SETTINGS = '''
         推荐组合：<strong>错误重试</strong>（默认）或 <strong>智能摘要 + 错误重试</strong>
       </p>
     </div>
-  </div>
-  
-  <div class="card">
-    <h3>其他设置</h3>
-    <p style="color:var(--muted);font-size:0.875rem">更多设置项即将推出...</p>
   </div>
 </div>
 '''
@@ -616,8 +640,8 @@ async function loadAccounts(){
       return;
     }
     $('#accountList').innerHTML=d.accounts.map(a=>{
-      const statusBadge=a.status==='active'?'success':a.status==='cooldown'?'warn':'error';
-      const statusText={active:'可用',cooldown:'冷却中',unhealthy:'不健康',disabled:'已禁用'}[a.status]||a.status;
+      const statusBadge=a.status==='active'?'success':a.status==='cooldown'?'warn':a.status==='suspended'?'error':'error';
+      const statusText={active:'可用',cooldown:'冷却中',unhealthy:'不健康',disabled:'已禁用',suspended:'已封禁'}[a.status]||a.status;
       const authBadge=a.auth_method==='idc'?'info':'success';
       const authText=a.auth_method==='idc'?'IdC':'Social';
       return `
@@ -1093,8 +1117,42 @@ async function updateHistoryConfig(){
   }catch(e){console.error('保存配置失败:',e)}
 }
 
+// 限速配置
+async function loadRateLimitConfig(){
+  try{
+    const r=await fetch('/api/settings/rate-limit');
+    const d=await r.json();
+    $('#rateLimitEnabled').checked=d.enabled;
+    $('#minRequestInterval').value=d.min_request_interval||1.0;
+    $('#maxRequestsPerMinute').value=d.max_requests_per_minute||30;
+    $('#globalMaxRequestsPerMinute').value=d.global_max_requests_per_minute||60;
+    // 更新统计
+    const stats=d.stats||{};
+    $('#rateLimitStats').innerHTML=`
+      <div style="display:flex;justify-content:space-between">
+        <span>状态: <span class="badge ${d.enabled?'success':'warn'}">${d.enabled?'已启用':'已禁用'}</span></span>
+        <span>全局 RPM: ${stats.global_rpm||0}</span>
+      </div>
+    `;
+  }catch(e){console.error('加载限速配置失败:',e)}
+}
+
+async function updateRateLimitConfig(){
+  const config={
+    enabled:$('#rateLimitEnabled').checked,
+    min_request_interval:parseFloat($('#minRequestInterval').value)||1.0,
+    max_requests_per_minute:parseInt($('#maxRequestsPerMinute').value)||30,
+    global_max_requests_per_minute:parseInt($('#globalMaxRequestsPerMinute').value)||60
+  };
+  try{
+    await fetch('/api/settings/rate-limit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});
+    loadRateLimitConfig();
+  }catch(e){console.error('保存限速配置失败:',e)}
+}
+
 // 页面加载时加载设置
 loadHistoryConfig();
+loadRateLimitConfig();
 '''
 
 JS_SCRIPTS = JS_UTILS + JS_TABS + JS_STATUS + JS_DOCS + JS_STATS + JS_LOGS + JS_ACCOUNTS + JS_LOGIN + JS_FLOWS + JS_SETTINGS
@@ -1115,7 +1173,7 @@ HTML_PAGE = f'''<!DOCTYPE html>
 <body>
 <div class="container">
 {HTML_BODY}
-<div class="footer">Kiro API Proxy v1.6.0 - Flow Monitor | 在线登录 | Token 自动刷新 | 配额管理</div>
+<div class="footer">Kiro API Proxy v1.6.1 - Flow Monitor | 在线登录 | Token 自动刷新 | 配额管理 | 请求限速</div>
 </div>
 <script>
 {JS_SCRIPTS}

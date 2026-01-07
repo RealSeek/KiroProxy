@@ -373,6 +373,7 @@ async def api_account_usage(account_id: str):
 # ==================== 历史消息管理 API ====================
 
 from .core import get_history_config, update_history_config, TruncateStrategy
+from .core.rate_limiter import get_rate_limiter
 
 @app.get("/api/settings/history")
 async def api_get_history_config():
@@ -387,6 +388,35 @@ async def api_update_history_config(request: Request):
     data = await request.json()
     update_history_config(data)
     return {"ok": True, "config": get_history_config().to_dict()}
+
+
+# ==================== 限速配置 API ====================
+
+@app.get("/api/settings/rate-limit")
+async def api_get_rate_limit_config():
+    """获取限速配置"""
+    limiter = get_rate_limiter()
+    return {
+        "enabled": limiter.config.enabled,
+        "min_request_interval": limiter.config.min_request_interval,
+        "max_requests_per_minute": limiter.config.max_requests_per_minute,
+        "global_max_requests_per_minute": limiter.config.global_max_requests_per_minute,
+        "stats": limiter.get_stats()
+    }
+
+
+@app.post("/api/settings/rate-limit")
+async def api_update_rate_limit_config(request: Request):
+    """更新限速配置"""
+    data = await request.json()
+    limiter = get_rate_limiter()
+    limiter.update_config(**data)
+    return {"ok": True, "config": {
+        "enabled": limiter.config.enabled,
+        "min_request_interval": limiter.config.min_request_interval,
+        "max_requests_per_minute": limiter.config.max_requests_per_minute,
+        "global_max_requests_per_minute": limiter.config.global_max_requests_per_minute,
+    }}
 
 
 # ==================== 文档 API ====================
@@ -429,7 +459,7 @@ async def api_docs_content(doc_id: str):
 def run(port: int = 8080):
     import uvicorn
     print(f"\n{'='*50}")
-    print(f"  Kiro API Proxy v1.6.0")
+    print(f"  Kiro API Proxy v1.6.1")
     print(f"  http://localhost:{port}")
     print(f"{'='*50}\n")
     uvicorn.run(app, host="0.0.0.0", port=port)

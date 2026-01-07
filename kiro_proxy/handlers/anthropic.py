@@ -2,6 +2,7 @@
 import json
 import uuid
 import time
+import asyncio
 import httpx
 from fastapi import Request, HTTPException
 from fastapi.responses import StreamingResponse
@@ -10,6 +11,8 @@ from ..config import KIRO_API_URL, map_model_name
 from ..core import state, RetryableRequest, is_retryable_error, stats_manager, flow_monitor, TokenUsage
 from ..core.state import RequestLog
 from ..core.history_manager import HistoryManager, get_history_config, is_content_length_error, TruncateStrategy
+from ..core.error_handler import classify_error, ErrorType, format_error_log
+from ..core.rate_limiter import get_rate_limiter
 from ..credential import quota_manager
 from ..kiro_api import build_headers, build_kiro_request, parse_event_stream_full, parse_event_stream, is_quota_exceeded_error
 from ..converters import (
@@ -52,27 +55,37 @@ def _count_tokens_from_messages(messages, system: str = "") -> int:
     return total
 
 
-def _classify_kiro_error(error_text: str, status_code: int = 500):
-    """分类 Kiro API 错误"""
-    lowered = error_text.lower()
+def _handle_kiro_error(status_code: int, error_text: str, account):
+    """处理 Kiro API 错误，返回 (http_status, error_type, error_message)"""
+    error = classify_error(status_code, error_text)
     
-    # 配额超限
-    if is_quota_exceeded_error(status_code, error_text):
-        return 429, "rate_limit_error", "Rate limited, please retry later."
+    # 打印友好的错误日志
+    print(format_error_log(error, account.id if account else None))
     
-    # 模型不可用
-    if "model_temporarily_unavailable" in error_text or "unexpectedly high load" in lowered:
-        return 503, "overloaded_error", "Model temporarily unavailable, please retry."
+    # 账号封禁 - 禁用账号
+    if error.should_disable_account and account:
+        account.enabled = False
+        from ..credential import CredentialStatus
+        account.status = CredentialStatus.SUSPENDED
+        print(f"[Account] 账号 {account.id} 已被禁用 (封禁)")
     
-    # 内容过长
-    if "content_length_exceeds_threshold" in error_text or "too long" in lowered:
-        return 400, "invalid_request_error", "Conversation too long, please /clear or start a new chat."
+    # 配额超限 - 标记冷却
+    elif error.type == ErrorType.RATE_LIMITED and account:
+        account.mark_quota_exceeded(error.message[:100])
     
-    # 认证错误
-    if status_code == 401 or "unauthorized" in lowered or "invalid token" in lowered:
-        return 401, "authentication_error", "Token expired or invalid, please refresh."
+    # 映射错误类型
+    error_type_map = {
+        ErrorType.ACCOUNT_SUSPENDED: (403, "authentication_error"),
+        ErrorType.RATE_LIMITED: (429, "rate_limit_error"),
+        ErrorType.CONTENT_TOO_LONG: (400, "invalid_request_error"),
+        ErrorType.AUTH_FAILED: (401, "authentication_error"),
+        ErrorType.SERVICE_UNAVAILABLE: (503, "api_error"),
+        ErrorType.MODEL_UNAVAILABLE: (503, "overloaded_error"),
+        ErrorType.UNKNOWN: (500, "api_error"),
+    }
     
-    return 500, "api_error", "Upstream API error."
+    http_status, err_type = error_type_map.get(error.type, (500, "api_error"))
+    return http_status, err_type, error.user_message, error
 
 
 async def handle_count_tokens(request: Request):
@@ -150,6 +163,13 @@ async def handle_messages(request: Request):
         profile_arn=creds.profile_arn if creds else None,
         client_id=creds.client_id if creds else None
     )
+    
+    # 限速检查
+    rate_limiter = get_rate_limiter()
+    can_request, wait_seconds, reason = rate_limiter.can_request(account.id)
+    if not can_request:
+        print(f"[Anthropic] 限速: {reason}")
+        await asyncio.sleep(wait_seconds)
     
     # 转换消息格式
     user_content, history, tool_results = convert_anthropic_messages_to_kiro(messages, system)
@@ -241,20 +261,23 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                             print(f"Response: {error_str[:500]}")
                             print(f"======================")
                             
-                            # 检查是否为配额超限
-                            if is_quota_exceeded_error(response.status_code, error_str):
-                                current_account.mark_quota_exceeded(error_str[:100])
+                            # 使用统一的错误处理
+                            http_status, error_type, error_msg, error_obj = _handle_kiro_error(
+                                response.status_code, error_str, current_account
+                            )
+                            
+                            # 账号封禁 - 尝试切换账号
+                            if error_obj.should_switch_account:
                                 next_account = state.get_next_available_account(current_account.id)
                                 if next_account and retry_count < max_retries:
+                                    print(f"[Stream] 切换账号: {current_account.id} -> {next_account.id}")
                                     current_account = next_account
                                     headers["Authorization"] = f"Bearer {current_account.get_token()}"
                                     retry_count += 1
                                     continue
-
-                            _, error_type, error_msg = _classify_kiro_error(error_str, response.status_code)
                             
                             # 检查是否为内容长度超限错误，尝试截断重试
-                            if is_content_length_error(response.status_code, error_str):
+                            if error_obj.type == ErrorType.CONTENT_TOO_LONG:
                                 truncated_history, should_retry = history_manager.handle_length_error(history, retry_count)
                                 if should_retry:
                                     print(f"[Stream] 内容长度超限，{history_manager.truncate_info}")
@@ -344,6 +367,7 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
 
                         current_account.request_count += 1
                         current_account.last_used = time.time()
+                        rate_limiter.record_request(current_account.id)
                         return
 
             except httpx.TimeoutException:
@@ -428,19 +452,23 @@ async def _handle_non_stream(kiro_request, headers, account, model, log_id, star
 
                 if response.status_code != 200:
                     error_msg = response.text
-                    status, error_type, error_message = _classify_kiro_error(error_msg, response.status_code)
                     
-                    # 检查是否为配额超限
-                    if is_quota_exceeded_error(response.status_code, error_msg):
-                        current_account.mark_quota_exceeded(error_msg[:100])
+                    # 使用统一的错误处理
+                    status, error_type, error_message, error_obj = _handle_kiro_error(
+                        response.status_code, error_msg, current_account
+                    )
+                    
+                    # 账号封禁或配额超限 - 尝试切换账号
+                    if error_obj.should_switch_account:
                         next_account = state.get_next_available_account(current_account.id)
                         if next_account and retry < max_retries:
+                            print(f"[NonStream] 切换账号: {current_account.id} -> {next_account.id}")
                             current_account = next_account
                             headers["Authorization"] = f"Bearer {current_account.get_token()}"
                             continue
                     
                     # 检查是否为内容长度超限错误，尝试截断重试
-                    if history_manager and is_content_length_error(response.status_code, error_msg):
+                    if error_obj.type == ErrorType.CONTENT_TOO_LONG and history_manager:
                         truncated_history, should_retry = history_manager.handle_length_error(history, retry)
                         if should_retry:
                             print(f"[NonStream] 内容长度超限，{history_manager.truncate_info}")
@@ -455,6 +483,7 @@ async def _handle_non_stream(kiro_request, headers, account, model, log_id, star
                 result = parse_event_stream_full(response.content)
                 current_account.request_count += 1
                 current_account.last_used = time.time()
+                rate_limiter.record_request(current_account.id)
 
                 # 完成 Flow
                 if flow_id:

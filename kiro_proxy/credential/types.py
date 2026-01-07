@@ -14,6 +14,7 @@ class CredentialStatus(Enum):
     COOLDOWN = "cooldown"
     UNHEALTHY = "unhealthy"
     DISABLED = "disabled"
+    SUSPENDED = "suspended"  # 账号被封禁
 
 
 @dataclass

@@ -13,6 +13,11 @@ from .history_manager import (
     get_history_config, set_history_config, update_history_config,
     is_content_length_error
 )
+from .error_handler import (
+    ErrorType, KiroError, classify_error, is_account_suspended,
+    get_anthropic_error_response, format_error_log
+)
+from .rate_limiter import RateLimiter, RateLimitConfig, rate_limiter, get_rate_limiter
 
 __all__ = [
     "state", "ProxyState", "RequestLog", "Account", 
@@ -24,5 +29,8 @@ __all__ = [
     "get_usage_limits", "get_account_usage", "UsageInfo",
     "HistoryManager", "HistoryConfig", "TruncateStrategy",
     "get_history_config", "set_history_config", "update_history_config",
-    "is_content_length_error"
+    "is_content_length_error",
+    "ErrorType", "KiroError", "classify_error", "is_account_suspended",
+    "get_anthropic_error_response", "format_error_log",
+    "RateLimiter", "RateLimitConfig", "rate_limiter", "get_rate_limiter"
 ]
