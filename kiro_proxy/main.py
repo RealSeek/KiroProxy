@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import MODELS_URL
 from .core import state, scheduler, stats_manager
+from .core.glm_api import glm_chat_completions
 from .handlers import anthropic, openai, gemini, admin
 from .web.html import HTML_PAGE
 from .credential import generate_machine_id, get_kiro_version
@@ -368,6 +369,17 @@ async def api_export_flows(request: Request):
 async def api_account_usage(account_id: str):
     """获取账号用量信息"""
     return await admin.get_account_usage_info(account_id)
+
+
+# ==================== GLM API (AI 助手) ====================
+
+@app.post("/api/glm/chat")
+async def api_glm_chat(request: Request):
+    """GLM 聊天接口 (用于 AI 助手)"""
+    body = await request.json()
+    messages = body.get("messages", [])
+    model = body.get("model", "glm-4.7")
+    return await glm_chat_completions(messages, model)
 
 
 # ==================== 启动 ====================

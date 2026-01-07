@@ -308,14 +308,8 @@ HTML_DOCS = '''
 HTML_HELP = '''
 <div class="panel active" id="help">
   <div class="card">
-    <h3>AI 助手 <span style="font-size:0.75rem;color:var(--muted);font-weight:normal">问我如何使用 Kiro Proxy</span></h3>
-    <div style="margin-bottom:1rem">
-      <label style="font-size:0.8rem;color:var(--muted)">GLM API 地址（zhipu-ai-proxy）</label>
-      <div class="input-row" style="margin-top:0.25rem">
-        <input type="text" id="helpApiUrl" placeholder="http://localhost:3000" value="http://localhost:3000">
-      </div>
-    </div>
-    <div class="chat-box" id="helpChatBox" style="height:300px"></div>
+    <h3>AI 助手 <span style="font-size:0.75rem;color:var(--muted);font-weight:normal">问我如何使用 Kiro Proxy（由 GLM-4.7 提供）</span></h3>
+    <div class="chat-box" id="helpChatBox" style="height:320px"></div>
     <div class="input-row" style="margin-top:1rem">
       <input type="text" id="helpInput" placeholder="问我任何关于 Kiro Proxy 的问题..." onkeydown="if(event.key==='Enter')sendHelp()">
       <button onclick="sendHelp()" id="helpSendBtn">发送</button>
@@ -1075,7 +1069,7 @@ function escapeHtml(text){
 '''
 
 JS_HELP = '''
-// AI 助手 (调用外部 GLM API)
+// AI 助手 (内置 GLM API)
 const HELP_SYSTEM_PROMPT = `你是 Kiro API Proxy 的 AI 助手。Kiro Proxy 是一个 Kiro IDE API 反向代理服务器。
 
 主要功能：
@@ -1127,19 +1121,17 @@ async function sendHelp() {
   $('#helpSendBtn').disabled = true;
   $('#helpSendBtn').textContent = '...';
   
-  const apiUrl = $('#helpApiUrl').value.trim() || 'http://localhost:3000';
-  
   try {
     const allMessages = [
       { role: 'system', content: HELP_SYSTEM_PROMPT },
       ...helpMessages
     ];
     
-    // 调用外部 GLM API (zhipu-ai-proxy)，使用 glm-4.7 模型
-    const res = await fetch(apiUrl + '/v1/chat/completions', {
+    // 调用内置 GLM API
+    const res = await fetch('/api/glm/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'glm-4.7', messages: allMessages, stream: false })
+      body: JSON.stringify({ model: 'glm-4.7', messages: allMessages })
     });
     
     const data = await res.json();
@@ -1153,7 +1145,7 @@ async function sendHelp() {
       addHelpMsg('ai', '无法获取回复');
     }
   } catch (e) {
-    addHelpMsg('ai', '请求失败: ' + e.message + '\\n\\n请确保 zhipu-ai-proxy 已启动 (npm start)');
+    addHelpMsg('ai', '请求失败: ' + e.message);
   }
   
   $('#helpSendBtn').disabled = false;
