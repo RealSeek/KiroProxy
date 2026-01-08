@@ -55,19 +55,47 @@ def detect_browsers() -> List[BrowserInfo]:
     """检测系统安装的浏览器"""
     browsers = []
     system = platform.system().lower()
-    
-    for browser_id, config in BROWSER_CONFIGS.items():
-        for name in config["names"]:
-            path = shutil.which(name)
-            if path:
-                browsers.append(BrowserInfo(
-                    id=browser_id,
-                    name=config["display"],
-                    path=path,
-                    supports_incognito=bool(config.get("incognito")),
-                    incognito_arg=config.get("incognito", ""),
-                ))
-                break  # 找到一个就够了
+
+    if system == "windows":
+        import winreg
+
+        def get_reg_path(exe_name: str) -> Optional[str]:
+            name = f"{exe_name}.exe"
+            for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+                try:
+                    with winreg.OpenKey(root, rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{name}") as key:
+                        path = winreg.QueryValue(key, "")
+                        if path and os.path.exists(path):
+                            return path
+                except (FileNotFoundError, OSError, WindowsError):
+                    pass
+            return None
+
+        for browser_id, config in BROWSER_CONFIGS.items():
+            for exe_name in config["names"]:
+                path = get_reg_path(exe_name)
+                if path:
+                    browsers.append(BrowserInfo(
+                        id=browser_id,
+                        name=config["display"],
+                        path=path,
+                        supports_incognito=bool(config.get("incognito")),
+                        incognito_arg=config.get("incognito", ""),
+                    ))
+                    break
+    else:
+        for browser_id, config in BROWSER_CONFIGS.items():
+            for name in config["names"]:
+                path = shutil.which(name)
+                if path:
+                    browsers.append(BrowserInfo(
+                        id=browser_id,
+                        name=config["display"],
+                        path=path,
+                        supports_incognito=bool(config.get("incognito")),
+                        incognito_arg=config.get("incognito", ""),
+                    ))
+                    break
     
     # 添加默认浏览器选项
     if browsers:
