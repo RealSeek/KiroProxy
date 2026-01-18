@@ -9,6 +9,7 @@ from pathlib import Path
 # 当前语言
 _current_lang = "zh"
 _translations = {}
+_loaded = False
 
 # 语言文件目录
 I18N_DIR = Path(__file__).parent / "i18n"
@@ -16,7 +17,7 @@ I18N_DIR = Path(__file__).parent / "i18n"
 
 def load_language(lang: str = "zh") -> dict:
     """加载语言文件"""
-    global _current_lang, _translations
+    global _current_lang, _translations, _loaded
     
     lang_file = I18N_DIR / f"{lang}.json"
     if not lang_file.exists():
@@ -27,6 +28,8 @@ def load_language(lang: str = "zh") -> dict:
         with open(lang_file, "r", encoding="utf-8") as f:
             _translations = json.load(f)
         _current_lang = lang
+        _loaded = True
+        print(f"[i18n] 已加载语言: {lang}")
     except Exception as e:
         print(f"[i18n] 加载语言文件失败: {e}")
         _translations = {}
@@ -34,18 +37,28 @@ def load_language(lang: str = "zh") -> dict:
     return _translations
 
 
+def _ensure_loaded():
+    """确保语言已加载"""
+    global _loaded
+    if not _loaded:
+        load_language("zh")
+
+
 def t(key: str) -> str:
     """获取翻译文本"""
+    _ensure_loaded()
     return _translations.get(key, key)
 
 
 def get_current_lang() -> str:
     """获取当前语言"""
+    _ensure_loaded()
     return _current_lang
 
 
 def get_translations() -> dict:
     """获取所有翻译"""
+    _ensure_loaded()
     return _translations.copy()
 
 
@@ -64,6 +77,3 @@ def get_available_languages() -> list:
             pass
     return languages
 
-
-# 默认加载中文
-load_language("zh")
