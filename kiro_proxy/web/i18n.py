@@ -1,0 +1,69 @@
+"""
+i18n 模块 - 多语言支持
+
+在启动时加载语言文件，提供翻译函数。
+"""
+import json
+from pathlib import Path
+
+# 当前语言
+_current_lang = "zh"
+_translations = {}
+
+# 语言文件目录
+I18N_DIR = Path(__file__).parent / "i18n"
+
+
+def load_language(lang: str = "zh") -> dict:
+    """加载语言文件"""
+    global _current_lang, _translations
+    
+    lang_file = I18N_DIR / f"{lang}.json"
+    if not lang_file.exists():
+        lang_file = I18N_DIR / "zh.json"  # 回退到中文
+        lang = "zh"
+    
+    try:
+        with open(lang_file, "r", encoding="utf-8") as f:
+            _translations = json.load(f)
+        _current_lang = lang
+    except Exception as e:
+        print(f"[i18n] 加载语言文件失败: {e}")
+        _translations = {}
+    
+    return _translations
+
+
+def t(key: str) -> str:
+    """获取翻译文本"""
+    return _translations.get(key, key)
+
+
+def get_current_lang() -> str:
+    """获取当前语言"""
+    return _current_lang
+
+
+def get_translations() -> dict:
+    """获取所有翻译"""
+    return _translations.copy()
+
+
+def get_available_languages() -> list:
+    """获取可用语言列表"""
+    languages = []
+    for f in I18N_DIR.glob("*.json"):
+        try:
+            with open(f, "r", encoding="utf-8") as fp:
+                data = json.load(fp)
+                languages.append({
+                    "code": f.stem,
+                    "name": data.get("name", f.stem)
+                })
+        except:
+            pass
+    return languages
+
+
+# 默认加载中文
+load_language("zh")

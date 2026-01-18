@@ -28,7 +28,7 @@ def load_config() -> dict:
             return json.loads(config_path.read_text(encoding="utf-8"))
         except:
             pass
-    return {"port": 8080, "remember_port": True, "auto_open_browser": True}
+    return {"port": 8080, "remember_port": True, "auto_open_browser": True, "language": "zh"}
 
 
 def save_config(config: dict):
@@ -69,7 +69,7 @@ def launch_with_ui():
     
     # 设置窗口大小和位置（居中）
     window_width = 400
-    window_height = 280
+    window_height = 320
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
     x = (screen_width - window_width) // 2
@@ -128,11 +128,24 @@ def launch_with_ui():
     browser_check = ttk.Checkbutton(options_frame, text="启动后自动打开浏览器", variable=browser_var)
     browser_check.pack(anchor="w")
     
+    # 语言选择
+    lang_frame = ttk.Frame(main_frame)
+    lang_frame.pack(fill="x", pady=5)
+    
+    lang_label = ttk.Label(lang_frame, text="界面语言:")
+    lang_label.pack(side="left")
+    
+    lang_var = tk.StringVar(value=config.get("language", "zh"))
+    lang_combo = ttk.Combobox(lang_frame, textvariable=lang_var, state="readonly", width=15)
+    lang_combo["values"] = ("zh - 中文", "en - English")
+    lang_combo.set("zh - 中文" if lang_var.get() == "zh" else "en - English")
+    lang_combo.pack(side="left", padx=10)
+    
     # 按钮框架
     button_frame = ttk.Frame(main_frame)
     button_frame.pack(pady=20)
     
-    result = {"port": None, "auto_open": False}
+    result = {"port": None, "auto_open": False, "language": "zh"}
     
     def validate_and_check():
         """验证端口并检查可用性"""
@@ -168,16 +181,21 @@ def launch_with_ui():
         if port is None:
             return
         
+        # 获取语言设置
+        lang = lang_combo.get().split(" - ")[0]
+        
         # 保存配置
         if remember_var.get():
             save_config({
                 "port": port,
                 "remember_port": True,
-                "auto_open_browser": browser_var.get()
+                "auto_open_browser": browser_var.get(),
+                "language": lang
             })
         
         result["port"] = port
         result["auto_open"] = browser_var.get()
+        result["language"] = lang
         root.quit()
         root.destroy()
     
@@ -218,6 +236,10 @@ def launch_with_ui():
                 time.sleep(1.5)  # 等待服务器启动
                 webbrowser.open(f"http://localhost:{port}")
             threading.Thread(target=open_browser, daemon=True).start()
+        
+        # 加载选定的语言
+        from kiro_proxy.web.i18n import load_language
+        load_language(result["language"])
         
         # 启动服务器
         from kiro_proxy.main import run

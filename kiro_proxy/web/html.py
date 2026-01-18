@@ -545,7 +545,7 @@ const $$=s=>document.querySelectorAll(s);
 function copy(text){
   navigator.clipboard.writeText(text).then(()=>{
     const toast=document.createElement('div');
-    toast.textContent='已复制';
+    toast.textContent=_('common.copied');
     toast.style.cssText='position:fixed;bottom:2rem;left:50%;transform:translateX(-50%);background:var(--accent);color:var(--bg);padding:0.5rem 1rem;border-radius:6px;font-size:0.875rem;z-index:1000';
     document.body.appendChild(toast);
     setTimeout(()=>toast.remove(),1500);
@@ -583,9 +583,9 @@ echo "配置已清除"`);
 }
 
 function formatUptime(s){
-  if(s<60)return s+'秒';
-  if(s<3600)return Math.floor(s/60)+'分钟';
-  return Math.floor(s/3600)+'小时'+Math.floor((s%3600)/60)+'分钟';
+  if(s<60)return s+_('time.seconds');
+  if(s<3600)return Math.floor(s/60)+_('time.minutes');
+  return Math.floor(s/3600)+_('time.hours')+Math.floor((s%3600)/60)+_('time.minutes');
 }
 
 function escapeHtml(text){
@@ -616,17 +616,17 @@ async function checkStatus(){
     const r=await fetch('/api/status');
     const d=await r.json();
     $('#statusDot').className='status-dot '+(d.ok?'ok':'err');
-    const statusMsg = d.ok ? (d.has_accounts ? '已连接' : '已启动(无账号)') : '未连接';
+    const statusMsg = d.ok ? (d.has_accounts ? _('status.connected') : _('status.noAccounts')) : _('status.disconnected');
     $('#statusText').textContent=statusMsg;
     if(d.port) {
-      $('#portInfo').textContent='端口 '+d.port;
+      $('#portInfo').textContent=_('status.port')+' '+d.port;
       if($('#currentPort'))$('#currentPort').textContent=d.port;
       if($('#newPort'))$('#newPort').value=d.port;
     }
-    if(d.stats)$('#uptime').textContent='运行 '+formatUptime(d.stats.uptime_seconds);
+    if(d.stats)$('#uptime').textContent=_('status.running')+' '+formatUptime(d.stats.uptime_seconds);
   }catch(e){
     $('#statusDot').className='status-dot err';
-    $('#statusText').textContent='连接失败';
+    $('#statusText').textContent=_('status.failed');
   }
 }
 checkStatus();
@@ -794,14 +794,17 @@ async function loadAccounts(){
     const r=await fetch('/api/accounts');
     const d=await r.json();
     if(!d.accounts||d.accounts.length===0){
-      $('#accountList').innerHTML='<p style="color:var(--muted)">暂无账号，请点击"扫描 Token"</p>';
+      $('#accountList').innerHTML='<p style="color:var(--muted)">'+_('accounts.noAccounts')+'</p>';
       return;
     }
     $('#accountList').innerHTML=d.accounts.map(a=>{
       const statusBadge=a.status==='active'?'success':a.status==='cooldown'?'warn':a.status==='suspended'?'error':'error';
-      const statusText={active:'可用',cooldown:'冷却中',unhealthy:'不健康',disabled:'已禁用',suspended:'已封禁'}[a.status]||a.status;
+      const statusTextMap={active:_('accounts.available'),cooldown:_('accounts.cooldown'),unhealthy:_('accounts.unhealthy'),disabled:_('common.disabled'),suspended:_('accounts.suspended')};
+      const statusText=statusTextMap[a.status]||a.status;
       const authBadge=a.auth_method==='idc'?'info':'success';
       const authText=a.auth_method==='idc'?'IdC':'Social';
+      const tokenStatus=a.token_expired?_('accounts.tokenExpired'):a.token_expiring_soon?_('accounts.tokenExpiring'):_('accounts.tokenValid');
+      const tokenBadge=a.token_expired?'error':a.token_expiring_soon?'warn':'success';
       return `
         <div class="account-card">
           <div class="account-header">
@@ -813,19 +816,19 @@ async function loadAccounts(){
             <span style="color:var(--muted);font-size:0.75rem">${a.id}</span>
           </div>
           <div class="account-meta">
-            <div class="account-meta-item"><span>请求数</span><span>${a.request_count}</span></div>
-            <div class="account-meta-item"><span>错误数</span><span>${a.error_count}</span></div>
-            <div class="account-meta-item"><span>Token</span><span class="badge ${a.token_expired?'error':a.token_expiring_soon?'warn':'success'}">${a.token_expired?'已过期':a.token_expiring_soon?'即将过期':'有效'}</span></div>
-            ${a.cooldown_remaining?`<div class="account-meta-item"><span>冷却剩余</span><span>${a.cooldown_remaining}秒</span></div>`:''}
+            <div class="account-meta-item"><span>${_('accounts.requests')}</span><span>${a.request_count}</span></div>
+            <div class="account-meta-item"><span>${_('accounts.errors')}</span><span>${a.error_count}</span></div>
+            <div class="account-meta-item"><span>${_('accounts.token')}</span><span class="badge ${tokenBadge}">${tokenStatus}</span></div>
+            ${a.cooldown_remaining?`<div class="account-meta-item"><span>${_('accounts.cooldown')}</span><span>${a.cooldown_remaining}s</span></div>`:''}
           </div>
           <div id="usage-${a.id}" class="account-usage" style="display:none;margin-top:0.75rem;padding:0.75rem;background:var(--bg);border-radius:6px"></div>
           <div class="account-actions">
-            <button class="secondary small" onclick="queryUsage('${a.id}')">查询用量</button>
-            <button class="secondary small" onclick="refreshToken('${a.id}')">刷新 Token</button>
-            <button class="secondary small" onclick="viewAccountDetail('${a.id}')">详情</button>
-            ${a.status==='cooldown'?`<button class="secondary small" onclick="restoreAccount('${a.id}')">恢复</button>`:''}
-            <button class="secondary small" onclick="toggleAccount('${a.id}')">${a.enabled?'禁用':'启用'}</button>
-            <button class="secondary small" onclick="deleteAccount('${a.id}')" style="color:var(--error)">删除</button>
+            <button class="secondary small" onclick="queryUsage('${a.id}')">${_('accounts.queryUsage')}</button>
+            <button class="secondary small" onclick="refreshToken('${a.id}')">${_('accounts.refreshToken')}</button>
+            <button class="secondary small" onclick="viewAccountDetail('${a.id}')">${_('accounts.details')}</button>
+            ${a.status==='cooldown'?`<button class="secondary small" onclick="restoreAccount('${a.id}')">${_('accounts.restore')}</button>`:''}
+            <button class="secondary small" onclick="toggleAccount('${a.id}')">${a.enabled?_('common.disabled'):_('common.enabled')}</button>
+            <button class="secondary small" onclick="deleteAccount('${a.id}')" style="color:var(--error)">${_('common.delete')}</button>
           </div>
         </div>
       `;
@@ -1521,7 +1524,109 @@ JS_SCRIPTS = JS_UTILS + JS_TABS + JS_STATUS + JS_DOCS + JS_STATS + JS_LOGS + JS_
 
 
 # ==================== 组装最终 HTML ====================
-HTML_PAGE = f'''<!DOCTYPE html>
+def get_html_page() -> str:
+    """生成带有 i18n 翻译的 HTML 页面"""
+    from .i18n import t, get_current_lang
+    
+    lang = get_current_lang()
+    
+    # 生成 JavaScript 中的翻译函数
+    js_i18n = f'''
+// i18n 翻译
+const LANG = "{lang}";
+const I18N = {{
+  "status.connected": "{t('status.connected')}",
+  "status.noAccounts": "{t('status.noAccounts')}",
+  "status.disconnected": "{t('status.disconnected')}",
+  "status.failed": "{t('status.failed')}",
+  "status.port": "{t('status.port')}",
+  "status.running": "{t('status.running')}",
+  "common.copied": "{t('common.copied')}",
+  "common.enabled": "{t('common.enabled')}",
+  "common.disabled": "{t('common.disabled')}",
+  "common.delete": "{t('common.delete')}",
+  "common.loading": "{t('common.loading')}",
+  "accounts.available": "{t('accounts.available')}",
+  "accounts.cooldown": "{t('accounts.cooldown')}",
+  "accounts.unhealthy": "{t('accounts.unhealthy')}",
+  "accounts.suspended": "{t('accounts.suspended')}",
+  "accounts.requests": "{t('accounts.requests')}",
+  "accounts.errors": "{t('accounts.errors')}",
+  "accounts.token": "{t('accounts.token')}",
+  "accounts.tokenValid": "{t('accounts.tokenValid')}",
+  "accounts.tokenExpiring": "{t('accounts.tokenExpiring')}",
+  "accounts.tokenExpired": "{t('accounts.tokenExpired')}",
+  "accounts.queryUsage": "{t('accounts.queryUsage')}",
+  "accounts.refreshToken": "{t('accounts.refreshToken')}",
+  "accounts.details": "{t('accounts.details')}",
+  "accounts.restore": "{t('accounts.restore')}",
+  "accounts.noAccounts": "{t('accounts.noAccounts')}",
+  "accounts.scan": "{t('accounts.scan')}",
+  "accounts.alreadyAdded": "{t('accounts.alreadyAdded')}",
+  "msg.confirmDelete": "{t('msg.confirmDelete')}",
+  "msg.refreshSuccess": "{t('msg.refreshSuccess')}",
+  "msg.refreshFailed": "{t('msg.refreshFailed')}",
+  "msg.scanFailed": "{t('msg.scanFailed')}",
+  "msg.noTokensFound": "{t('msg.noTokensFound')}",
+  "time.seconds": "{t('time.seconds')}",
+  "time.minutes": "{t('time.minutes')}",
+  "time.hours": "{t('time.hours')}"
+}};
+function _(key) {{ return I18N[key] || key; }}
+'''
+    
+    # 替换 HTML 中的文本
+    html_header = f'''
+<header>
+  <h1><img src="/assets/icon.svg" alt="Kiro">Kiro API Proxy</h1>
+  <div class="status">
+    <span class="status-dot" id="statusDot"></span>
+    <span id="statusText">{t('status.checking')}</span>
+    <span id="portInfo" style="margin-left:0.5rem;color:var(--info)"></span>
+    <span id="uptime"></span>
+  </div>
+</header>
+
+<div class="tabs">
+  <div class="tab active" data-tab="help">{t('tab.help')}</div>
+  <div class="tab" data-tab="flows">{t('tab.flows')}</div>
+  <div class="tab" data-tab="monitor">{t('tab.monitor')}</div>
+  <div class="tab" data-tab="accounts">{t('tab.accounts')}</div>
+  <div class="tab" data-tab="logs">{t('tab.logs')}</div>
+  <div class="tab" data-tab="api">API</div>
+  <div class="tab" data-tab="settings">{t('tab.settings')}</div>
+</div>
+'''
+
+    # 使用原始 HTML 部分，只替换 header
+    html_body = html_header + HTML_HELP + HTML_FLOWS + HTML_MONITOR + HTML_ACCOUNTS + HTML_LOGS + HTML_API + HTML_SETTINGS
+    
+    return f'''<!DOCTYPE html>
+<html lang="{lang}">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kiro API</title>
+<link rel="icon" type="image/svg+xml" href="/assets/icon.svg">
+<style>
+{CSS_STYLES}
+</style>
+</head>
+<body>
+<div class="container">
+{html_body}
+<div class="footer">Kiro API Proxy v1.7.2</div>
+</div>
+<script>
+{js_i18n}
+{JS_SCRIPTS}
+</script>
+</body>
+</html>'''
+
+
+# 保持向后兼容 - 默认中文页面
+HTML_PAGE = get_html_page() if False else f'''<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
@@ -1535,10 +1640,11 @@ HTML_PAGE = f'''<!DOCTYPE html>
 <body>
 <div class="container">
 {HTML_BODY}
-<div class="footer">Kiro API Proxy v1.7.1 - Codex 工具调用 | 环境变量配置 | 限速开关修复</div>
+<div class="footer">Kiro API Proxy v1.7.2</div>
 </div>
 <script>
 {JS_SCRIPTS}
 </script>
 </body>
 </html>'''
+
