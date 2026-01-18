@@ -4,6 +4,7 @@ i18n 模块 - 多语言支持
 在启动时加载语言文件，提供翻译函数。
 """
 import json
+import sys
 from pathlib import Path
 
 # 当前语言
@@ -11,8 +12,13 @@ _current_lang = "zh"
 _translations = {}
 _loaded = False
 
-# 语言文件目录
-I18N_DIR = Path(__file__).parent / "i18n"
+# 语言文件目录 - 支持 PyInstaller 打包
+if hasattr(sys, '_MEIPASS'):
+    # PyInstaller 打包后的临时目录
+    I18N_DIR = Path(sys._MEIPASS) / "kiro_proxy" / "web" / "i18n"
+else:
+    # 源码运行
+    I18N_DIR = Path(__file__).parent / "i18n"
 
 
 def load_language(lang: str = "zh") -> dict:

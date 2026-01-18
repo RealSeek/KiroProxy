@@ -551,7 +551,7 @@ def run(port: int = 8080):
     from .core import state
     state.current_port = port  # 设置当前端口供 WebUI 显示
     print(f"\n{'='*50}")
-    print(f"  Kiro API Proxy v1.7.1")
+    print(f"  Kiro API Proxy v1.7.4")
     print(f"  http://localhost:{port}")
     print(f"{'='*50}\n")
     uvicorn.run(app, host="0.0.0.0", port=port)
