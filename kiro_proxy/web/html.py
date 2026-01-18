@@ -1261,13 +1261,13 @@ async function loadFlowStats(){
     const r=await fetch('/api/flows/stats');
     const d=await r.json();
     $('#flowStatsGrid').innerHTML=`
-      <div class="stat-item"><div class="stat-value">${d.total_flows}</div><div class="stat-label">总请求</div></div>
-      <div class="stat-item"><div class="stat-value">${d.completed}</div><div class="stat-label">完成</div></div>
-      <div class="stat-item"><div class="stat-value">${d.errors}</div><div class="stat-label">错误</div></div>
-      <div class="stat-item"><div class="stat-value">${d.error_rate}</div><div class="stat-label">错误率</div></div>
-      <div class="stat-item"><div class="stat-value">${d.avg_duration_ms.toFixed(0)}ms</div><div class="stat-label">平均延迟</div></div>
-      <div class="stat-item"><div class="stat-value">${d.total_tokens_in}</div><div class="stat-label">输入Token</div></div>
-      <div class="stat-item"><div class="stat-value">${d.total_tokens_out}</div><div class="stat-label">输出Token</div></div>
+      <div class="stat-item"><div class="stat-value">${d.total_flows}</div><div class="stat-label">${_('flows.totalRequests')}</div></div>
+      <div class="stat-item"><div class="stat-value">${d.completed}</div><div class="stat-label">${_('flows.completed')}</div></div>
+      <div class="stat-item"><div class="stat-value">${d.errors}</div><div class="stat-label">${_('flows.error')}</div></div>
+      <div class="stat-item"><div class="stat-value">${d.error_rate}</div><div class="stat-label">${_('flows.errorRate')}</div></div>
+      <div class="stat-item"><div class="stat-value">${d.avg_duration_ms.toFixed(0)}ms</div><div class="stat-label">${_('flows.avgLatency')}</div></div>
+      <div class="stat-item"><div class="stat-value">${d.total_tokens_in}</div><div class="stat-label">${_('flows.inputTokens')}</div></div>
+      <div class="stat-item"><div class="stat-value">${d.total_tokens_out}</div><div class="stat-label">${_('flows.outputTokens')}</div></div>
     `;
   }catch(e){console.error(e)}
 }
@@ -1284,12 +1284,13 @@ async function loadFlows(){
     const r=await fetch(url);
     const d=await r.json();
     if(!d.flows||d.flows.length===0){
-      $('#flowList').innerHTML='<p style="color:var(--muted)">暂无请求记录</p>';
+      $('#flowList').innerHTML='<p style="color:var(--muted)">'+_('flows.noRecords')+'</p>';
       return;
     }
     $('#flowList').innerHTML=d.flows.map(f=>{
       const stateBadge={completed:'success',error:'error',streaming:'info',pending:'warn'}[f.state]||'info';
-      const stateText={completed:'完成',error:'错误',streaming:'流式中',pending:'等待中'}[f.state]||f.state;
+      const stateTextMap={completed:_('flows.completed'),error:_('flows.error'),streaming:_('flows.streaming'),pending:_('flows.pending')};
+      const stateText=stateTextMap[f.state]||f.state;
       const time=new Date(f.timing.created_at*1000).toLocaleTimeString();
       const duration=f.timing.duration_ms?f.timing.duration_ms.toFixed(0)+'ms':'-';
       const model=f.request?.model||'-';
@@ -1306,7 +1307,7 @@ async function loadFlows(){
               ${time} · ${duration} · ${tokens} tokens · ${f.protocol}
             </div>
           </div>
-          <button class="secondary small" onclick="event.stopPropagation();toggleBookmark('${f.id}',${!f.bookmarked})">${f.bookmarked?'取消':'收藏'}</button>
+          <button class="secondary small" onclick="event.stopPropagation();toggleBookmark('${f.id}',${!f.bookmarked})">${f.bookmarked?_('flows.unbookmark'):_('flows.bookmark')}</button>
         </div>
       `;
     }).join('');
@@ -1594,6 +1595,10 @@ const I18N = {{
   "flows.inputTokens": "{js_escape(t('flows.inputTokens') if t('flows.inputTokens') != 'flows.inputTokens' else 'Input Tokens')}",
   "flows.outputTokens": "{js_escape(t('flows.outputTokens') if t('flows.outputTokens') != 'flows.outputTokens' else 'Output Tokens')}",
   "flows.noRecords": "{js_escape(t('flows.noRecords') if t('flows.noRecords') != 'flows.noRecords' else 'No request records')}",
+  "flows.streaming": "{js_escape(t('flows.streaming'))}",
+  "flows.pending": "{js_escape(t('flows.pending'))}",
+  "flows.bookmark": "{js_escape(t('flows.bookmark') if t('flows.bookmark') != 'flows.bookmark' else 'Bookmark')}",
+  "flows.unbookmark": "{js_escape(t('flows.unbookmark') if t('flows.unbookmark') != 'flows.unbookmark' else 'Unbookmark')}",
   "logs.path": "{js_escape(t('logs.path') if t('logs.path') != 'logs.path' else 'Path')}",
   "logs.status": "{js_escape(t('logs.status') if t('logs.status') != 'logs.status' else 'Status')}",
   "settings.status": "{js_escape(t('settings.status') if t('settings.status') != 'settings.status' else 'Status')}",
@@ -1725,6 +1730,33 @@ function _(key) {{ return I18N[key] || key; }}
         '><strong>在线登录</strong> - 本机浏览器授权 | <strong>远程登录链接</strong> - 生成链接在其他机器授权<': f'><strong>{t("accounts.onlineLogin")}</strong> - {t("accounts.onlineLoginDesc") if t("accounts.onlineLoginDesc") != "accounts.onlineLoginDesc" else "Local browser auth"} | <strong>{t("accounts.remoteLogin")}</strong> - {t("accounts.remoteLoginDesc") if t("accounts.remoteLoginDesc") != "accounts.remoteLoginDesc" else "Generate link for other machines"}<',
         '><strong>扫描 Token</strong> - 从 Kiro IDE 扫描 | <strong>手动添加</strong> - 直接粘贴 Token<': f'><strong>{t("accounts.scan")}</strong> - {t("accounts.scanDesc") if t("accounts.scanDesc") != "accounts.scanDesc" else "Scan from Kiro IDE"} | <strong>{t("accounts.manualAdd")}</strong> - {t("accounts.manualAddDesc") if t("accounts.manualAddDesc") != "accounts.manualAddDesc" else "Paste Token directly"}<',
         '><strong>导入导出</strong> - 跨机器迁移账号配置<': f'><strong>{t("accounts.exportImport") if t("accounts.exportImport") != "accounts.exportImport" else "Export/Import"}</strong> - {t("accounts.exportImportDesc") if t("accounts.exportImportDesc") != "accounts.exportImportDesc" else "Migrate configs across machines"}<',
+        # API page
+        '>API 端点<': f'>{"API Endpoints" if lang == "en" else "API 端点"}<',
+        '>支持 OpenAI、Anthropic、Gemini 三种协议<': f'>{"Supports OpenAI, Anthropic, Gemini protocols" if lang == "en" else "支持 OpenAI、Anthropic、Gemini 三种协议"}<',
+        '>OpenAI 协议<': f'>{"OpenAI Protocol" if lang == "en" else "OpenAI 协议"}<',
+        '>Anthropic 协议<': f'>{"Anthropic Protocol" if lang == "en" else "Anthropic 协议"}<',
+        '>Gemini 协议<': f'>{"Gemini Protocol" if lang == "en" else "Gemini 协议"}<',
+        '>复制<': f'>{"Copy" if lang == "en" else "复制"}<',
+        '>配置示例<': f'>{"Config Examples" if lang == "en" else "配置示例"}<',
+        '模型: claude-sonnet-4': f'{"Model" if lang == "en" else "模型"}: claude-sonnet-4',
+        '模型: gpt-4o': f'{"Model" if lang == "en" else "模型"}: gpt-4o',
+        '>Claude Code 终端配置<': f'>{"Claude Code Terminal Setup" if lang == "en" else "Claude Code 终端配置"}<',
+        '>Claude Code 终端版需要配置 <code>~/.claude/settings.json</code> 才能跳过登录使用代理<': f'>{"Claude Code terminal requires" if lang == "en" else "Claude Code 终端版需要配置"} <code>~/.claude/settings.json</code> {"to skip login and use proxy" if lang == "en" else "才能跳过登录使用代理"}<',
+        '>临时生效（当前终端）<': f'>{"Temporary (Current Terminal)" if lang == "en" else "临时生效（当前终端）"}<',
+        '>复制命令<': f'>{"Copy Command" if lang == "en" else "复制命令"}<',
+        '>永久生效（推荐，写入配置文件）<': f'>{"Permanent (Recommended, write to config)" if lang == "en" else "永久生效（推荐，写入配置文件）"}<',
+        '>清除配置<': f'>{"Clear Config" if lang == "en" else "清除配置"}<',
+        '>模型映射<': f'>{"Model Mapping" if lang == "en" else "模型映射"}<',
+        '>支持多种模型名称，自动映射到 Kiro 模型<': f'>{"Supports multiple model names, auto-mapped to Kiro models" if lang == "en" else "支持多种模型名称，自动映射到 Kiro 模型"}<',
+        '>Kiro 模型<': f'>{"Kiro Model" if lang == "en" else "Kiro 模型"}<',
+        '>能力<': f'>{"Capability" if lang == "en" else "能力"}<',
+        '>可用名称<': f'>{"Available Names" if lang == "en" else "可用名称"}<',
+        '⭐⭐⭐ 推荐': f'⭐⭐⭐ {"Recommended" if lang == "en" else "推荐"}',
+        '⭐⭐⭐⭐ 更强': f'⭐⭐⭐⭐ {"Stronger" if lang == "en" else "更强"}',
+        '⚡ 快速': f'⚡ {"Fast" if lang == "en" else "快速"}',
+        '⭐⭐⭐⭐⭐ 最强': f'⭐⭐⭐⭐⭐ {"Strongest" if lang == "en" else "最强"}',
+        '🤖 自动': f'🤖 {"Auto" if lang == "en" else "自动"}',
+        '>💡 直接使用 Kiro 模型名（如 claude-sonnet-4）或任意映射名称均可<': f'>💡 {"Use Kiro model name (e.g. claude-sonnet-4) or any mapped name" if lang == "en" else "直接使用 Kiro 模型名（如 claude-sonnet-4）或任意映射名称均可"}<',
     }
     
     # 组装并翻译 HTML
