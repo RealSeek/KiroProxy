@@ -850,8 +850,9 @@ async def add_manual_token(request: Request):
     name = body.get("name", "手动添加账号")
     auth_method = body.get("auth_method", "social").lower()
 
-    if not access_token:
-        raise HTTPException(400, "缺少 access_token")
+    # 放宽验证：只要有 access_token 或 refresh_token 其一即可
+    if not access_token and not refresh_token:
+        raise HTTPException(400, "需要 access_token 或 refresh_token")
 
     # IDC 认证需要额外参数
     client_id = body.get("client_id", "").strip() if auth_method == "idc" else None
@@ -862,7 +863,7 @@ async def add_manual_token(request: Request):
 
     # 保存凭证到文件
     credentials = {
-        "accessToken": access_token,
+        "accessToken": access_token if access_token else None,
         "refreshToken": refresh_token if refresh_token else None,
         "region": body.get("region", "us-east-1"),
         "authMethod": auth_method,
@@ -882,9 +883,19 @@ async def add_manual_token(request: Request):
     )
     state.accounts.append(account)
     account.load_credentials()
+
+    # 如果没有 access_token 但有 refresh_token，立即执行一次刷新
+    refresh_result = None
+    if not access_token and refresh_token:
+        success, msg = await account.refresh_token()
+        if success:
+            refresh_result = "Token 刷新成功"
+        else:
+            refresh_result = f"Token 刷新失败: {msg}（账号已添加，可稍后手动刷新）"
+
     state._save_accounts()
 
-    return {"ok": True, "account_id": account.id}
+    return {"ok": True, "account_id": account.id, "refresh_result": refresh_result}
 
 
 # ==================== 远程登录链接 API ====================
