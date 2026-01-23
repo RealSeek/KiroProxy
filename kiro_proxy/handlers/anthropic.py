@@ -22,6 +22,7 @@ from ..converters import (
     convert_kiro_response_to_anthropic,
     extract_images_from_content
 )
+from .websearch import has_web_search_tool, handle_web_search_request, filter_web_search_tools
 
 
 def _extract_text_from_content(content) -> str:
@@ -166,7 +167,25 @@ async def handle_messages(request: Request):
         profile_arn=creds.profile_arn if creds else None,
         client_id=creds.client_id if creds else None
     )
-    
+
+    # 检查是否为 WebSearch 请求
+    if has_web_search_tool(tools):
+        print(f"[Anthropic] 检测到 WebSearch 工具，路由到 WebSearch 处理")
+        # 过滤掉 web_search 工具，保留其他工具（如果有的话）
+        other_tools = filter_web_search_tools(tools)
+        if other_tools:
+            # 如果还有其他工具，需要混合处理（暂不支持，先只处理 web_search）
+            print(f"[Anthropic] 注意：请求中还有 {len(other_tools)} 个其他工具，将被忽略")
+
+        return await handle_web_search_request(
+            body=body,
+            token=token,
+            machine_id=account.get_machine_id(),
+            model=model,
+            profile_arn=creds.profile_arn if creds else None,
+            client_id=creds.client_id if creds else None
+        )
+
     # 限速检查
     rate_limiter = get_rate_limiter()
     can_request, wait_seconds, reason = rate_limiter.can_request(account.id)

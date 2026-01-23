@@ -3,6 +3,7 @@ from pathlib import Path
 
 KIRO_API_URL = "https://q.us-east-1.amazonaws.com/generateAssistantResponse"
 MODELS_URL = "https://q.us-east-1.amazonaws.com/ListAvailableModels"
+MCP_API_URL = "https://q.us-east-1.amazonaws.com/mcp"  # WebSearch MCP 端点
 TOKEN_PATH = Path.home() / ".aws/sso/cache/kiro-auth-token.json"
 
 # 配额管理配置
