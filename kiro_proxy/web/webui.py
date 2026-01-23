@@ -63,12 +63,17 @@ th { font-weight: 500; color: var(--muted); }
 '''
 
 CSS_ACCOUNTS = '''
-.account-card { border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-bottom: 0.75rem; background: var(--card); }
+.account-card { border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-bottom: 0.75rem; background: var(--card); transition: opacity 0.2s; }
+.account-card.disabled { opacity: 0.5; }
 .account-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
 .account-name { font-weight: 500; display: flex; align-items: center; gap: 0.5rem; }
 .account-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.5rem; font-size: 0.8rem; color: var(--muted); }
 .account-meta-item { display: flex; justify-content: space-between; padding: 0.25rem 0; }
 .account-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border); }
+.badge.disabled { background: #e5e5e5; color: #737373; }
+@media (prefers-color-scheme: dark) {
+  .badge.disabled { background: #404040; color: #a3a3a3; }
+}
 '''
 
 CSS_CLIENTS = '''
@@ -1115,15 +1120,16 @@ async function loadAccounts(){
       return;
     }
     $('#accountList').innerHTML=d.accounts.map(a=>{
-      const statusBadge=a.status==='active'?'success':a.status==='cooldown'?'warn':a.status==='suspended'?'error':'error';
+      const isDisabled=!a.enabled;
+      const statusBadge=isDisabled?'disabled':a.status==='active'?'success':a.status==='cooldown'?'warn':a.status==='suspended'?'error':'error';
       const statusTextMap={active:_('accounts.available'),cooldown:_('accounts.cooldown'),unhealthy:_('accounts.unhealthy'),disabled:_('common.disabled'),suspended:_('accounts.suspended')};
-      const statusText=statusTextMap[a.status]||a.status;
+      const statusText=isDisabled?_('common.disabled'):statusTextMap[a.status]||a.status;
       const authBadge=a.auth_method==='idc'?'info':'success';
       const authText=a.auth_method==='idc'?'IdC':'Social';
       const tokenStatus=a.token_expired?_('accounts.tokenExpired'):a.token_expiring_soon?_('accounts.tokenExpiring'):_('accounts.tokenValid');
       const tokenBadge=a.token_expired?'error':a.token_expiring_soon?'warn':'success';
       return `
-        <div class="account-card">
+        <div class="account-card${isDisabled?' disabled':''}">
           <div class="account-header">
             <div class="account-name">
               <span class="badge ${statusBadge}">${statusText}</span>
