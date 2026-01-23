@@ -146,5 +146,10 @@
     "msg.addFailed": "添加失败",
     "msg.scanFailed": "扫描失败",
     "msg.noTokensFound": "未找到 Token 文件",
-    "msg.queryFailed": "查询失败"
+    "msg.queryFailed": "查询失败",
+    "login.subtitle": "管理控制台",
+    "login.placeholder": "请输入密码",
+    "login.submit": "登录",
+    "login.verifying": "验证中...",
+    "login.error": "密码错误"
 }

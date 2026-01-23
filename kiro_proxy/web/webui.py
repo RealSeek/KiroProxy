@@ -123,7 +123,85 @@ CSS_DOCS = '''
 }
 '''
 
-CSS_STYLES = CSS_BASE + CSS_LAYOUT + CSS_COMPONENTS + CSS_FORMS + CSS_ACCOUNTS + CSS_CLIENTS + CSS_API + CSS_DOCS
+CSS_LOGIN = '''
+/* Login Page Styles */
+.login-container {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  background: var(--bg);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 9999;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 2.5rem;
+  text-align: center;
+}
+
+.login-header { margin-bottom: 2rem; }
+.login-logo { width: 48px; height: 48px; margin-bottom: 1rem; }
+.login-title { font-size: 1.5rem; font-weight: 600; color: var(--text); }
+.login-subtitle { color: var(--muted); font-size: 0.875rem; margin-top: 0.5rem; }
+
+.login-input-group { margin-bottom: 1.5rem; }
+.login-input {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 1rem;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.login-input:focus { border-color: var(--accent); }
+.login-input.error { border-color: #ef4444; }
+
+.login-error {
+  color: #ef4444;
+  font-size: 0.875rem;
+  margin-top: 0.5rem;
+  min-height: 1.25rem;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.login-error.visible { opacity: 1; }
+
+.login-btn {
+  width: 100%;
+  padding: 0.75rem;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+.login-btn:hover { opacity: 0.9; }
+.login-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  10%, 30%, 50%, 70%, 90% { transform: translateX(-4px); }
+  20%, 40%, 60%, 80% { transform: translateX(4px); }
+}
+.shake { animation: shake 0.4s ease-in-out; }
+
+.hidden { display: none !important; }
+'''
+
+CSS_STYLES = CSS_BASE + CSS_LAYOUT + CSS_COMPONENTS + CSS_FORMS + CSS_ACCOUNTS + CSS_CLIENTS + CSS_API + CSS_DOCS + CSS_LOGIN
 
 
 # ==================== HTML 模板 ====================
@@ -599,10 +677,183 @@ HTML_CLIENTS = '''
 </div>
 '''
 
+HTML_LOGIN = '''
+<div id="login-view" class="login-container">
+  <div class="login-card" id="loginCard">
+    <div class="login-header">
+      <img src="/assets/icon.svg" alt="Kiro" class="login-logo">
+      <h1 class="login-title">Kiro API Proxy</h1>
+      <p class="login-subtitle" data-i18n="login.subtitle">管理控制台</p>
+    </div>
+    <div class="login-input-group">
+      <input type="password" id="loginPassword" class="login-input"
+             data-i18n-placeholder="login.placeholder" placeholder="请输入密码...">
+      <div id="loginError" class="login-error"></div>
+    </div>
+    <button id="loginBtn" class="login-btn" onclick="handleLogin()">
+      <span data-i18n="login.submit">登录</span>
+    </button>
+  </div>
+</div>
+'''
+
 HTML_BODY = HTML_HEADER + HTML_HELP + HTML_FLOWS + HTML_MONITOR + HTML_ACCOUNTS + HTML_CLIENTS + HTML_LOGS + HTML_API + HTML_SETTINGS
 
 
 # ==================== JavaScript ====================
+JS_AUTH = '''
+// Auth Module
+const AUTH_TOKEN_KEY = 'kiro_auth_token';
+
+const Auth = {
+  token: localStorage.getItem(AUTH_TOKEN_KEY),
+
+  async init() {
+    if (this.token) {
+      const valid = await this.verify();
+      if (valid) {
+        this.showApp();
+      } else {
+        this.logout();
+      }
+    } else {
+      // Check if auth is required
+      try {
+        const res = await fetch('/api/auth/verify');
+        if (res.status === 200) {
+          // No auth required (password not configured)
+          this.showApp();
+        } else {
+          this.showLogin();
+        }
+      } catch {
+        this.showLogin();
+      }
+    }
+
+    // Bind Enter key
+    document.getElementById('loginPassword')?.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') handleLogin();
+    });
+  },
+
+  showLogin() {
+    document.getElementById('login-view')?.classList.remove('hidden');
+    document.getElementById('app-view')?.classList.add('hidden');
+    setTimeout(() => document.getElementById('loginPassword')?.focus(), 100);
+  },
+
+  showApp() {
+    document.getElementById('login-view')?.classList.add('hidden');
+    document.getElementById('app-view')?.classList.remove('hidden');
+    // Trigger initial data load
+    if (typeof checkStatus === 'function') checkStatus();
+  },
+
+  async login(password) {
+    const btn = document.getElementById('loginBtn');
+    const input = document.getElementById('loginPassword');
+    const error = document.getElementById('loginError');
+    const card = document.getElementById('loginCard');
+
+    btn.disabled = true;
+    btn.innerHTML = `<span>${_('login.verifying') || '验证中...'}</span>`;
+    input.disabled = true;
+    input.classList.remove('error');
+    error.classList.remove('visible');
+
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password })
+      });
+
+      const data = await res.json();
+
+      if (res.ok && data.token) {
+        this.token = data.token;
+        localStorage.setItem(AUTH_TOKEN_KEY, data.token);
+        input.value = '';
+        this.showApp();
+      } else {
+        throw new Error(data.detail || data.error?.message || 'Login failed');
+      }
+    } catch (e) {
+      error.textContent = _('login.error') || '密码错误';
+      error.classList.add('visible');
+      input.classList.add('error');
+      card.classList.remove('shake');
+      void card.offsetWidth; // Trigger reflow
+      card.classList.add('shake');
+      input.focus();
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = `<span>${_('login.submit') || '登录'}</span>`;
+      input.disabled = false;
+    }
+  },
+
+  async verify() {
+    try {
+      const res = await this.fetch('/api/auth/verify');
+      return res.ok;
+    } catch {
+      return false;
+    }
+  },
+
+  logout() {
+    this.token = null;
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    this.showLogin();
+  },
+
+  async fetch(url, options = {}) {
+    const headers = { ...options.headers };
+    if (this.token) {
+      headers['Authorization'] = `Bearer ${this.token}`;
+    }
+
+    const res = await fetch(url, { ...options, headers });
+
+    if (res.status === 401 && url !== '/api/auth/login' && url !== '/api/auth/verify') {
+      this.logout();
+    }
+
+    return res;
+  }
+};
+
+// Global helpers
+const handleLogin = () => Auth.login(document.getElementById('loginPassword').value);
+const logout = () => { Auth.fetch('/api/auth/logout', { method: 'POST' }); Auth.logout(); };
+
+// Override global fetch for authenticated requests
+const _originalFetch = window.fetch.bind(window);
+window.fetch = (url, opts = {}) => {
+  // Skip auth header for login/verify endpoints
+  if (url === '/api/auth/login' || url === '/api/auth/verify') {
+    return _originalFetch(url, opts);
+  }
+  // Add Authorization header for all other requests
+  const headers = { ...opts.headers };
+  if (Auth.token) {
+    headers['Authorization'] = `Bearer ${Auth.token}`;
+  }
+  return _originalFetch(url, { ...opts, headers }).then(res => {
+    // Auto logout on 401 (except auth endpoints)
+    if (res.status === 401) {
+      Auth.logout();
+    }
+    return res;
+  });
+};
+
+// Init on DOMContentLoaded
+document.addEventListener('DOMContentLoaded', () => Auth.init());
+'''
+
 JS_UTILS = '''
 const $=s=>document.querySelector(s);
 const $$=s=>document.querySelectorAll(s);
@@ -1667,7 +1918,7 @@ async function deleteClientKey(id){
 }
 '''
 
-JS_SCRIPTS = JS_UTILS + JS_TABS + JS_STATUS + JS_DOCS + JS_STATS + JS_LOGS + JS_ACCOUNTS + JS_LOGIN + JS_FLOWS + JS_SETTINGS + JS_CLIENTS
+JS_SCRIPTS = JS_AUTH + JS_UTILS + JS_TABS + JS_STATUS + JS_DOCS + JS_STATS + JS_LOGS + JS_ACCOUNTS + JS_LOGIN + JS_FLOWS + JS_SETTINGS + JS_CLIENTS
 
 
 # ==================== 组装最终 HTML ====================
@@ -1766,7 +2017,12 @@ const I18N = {{
   "clients.never": "{'Never' if lang == 'en' else '从未'}",
   "clients.requests": "{'Requests' if lang == 'en' else '请求次数'}",
   "clients.enterName": "{'Please enter a Key name' if lang == 'en' else '请输入 Key 名称'}",
-  "clients.createFailed": "{'Create failed' if lang == 'en' else '创建失败'}"
+  "clients.createFailed": "{'Create failed' if lang == 'en' else '创建失败'}",
+  "login.subtitle": "{js_escape(t('login.subtitle'))}",
+  "login.placeholder": "{js_escape(t('login.placeholder'))}",
+  "login.submit": "{js_escape(t('login.submit'))}",
+  "login.verifying": "{js_escape(t('login.verifying'))}",
+  "login.error": "{js_escape(t('login.error'))}"
 }};
 function _(key) {{ return I18N[key] || key; }}
 '''
@@ -1843,6 +2099,10 @@ function _(key) {{ return I18N[key] || key; }}
         '>Token 可从 ~/.aws/sso/cache/ 目录下的 JSON 文件中获取<': f'>{t("accounts.tokenHint")}<',
         '>添加账号<': f'>{t("accounts.add")}<',
         '>扫描结果<': f'>{t("accounts.scanResults")}<',
+        # Login
+        'data-i18n="login.subtitle">管理控制台<': f'data-i18n="login.subtitle">{t("login.subtitle")}<',
+        'data-i18n-placeholder="login.placeholder" placeholder="请输入密码..."': f'data-i18n-placeholder="login.placeholder" placeholder="{t("login.placeholder")}"',
+        'data-i18n="login.submit">登录<': f'data-i18n="login.submit">{t("login.submit")}<',
         # Logs
         '>请求日志 <': f'>{t("logs.title")} <',
         '>清空<': f'>{t("logs.clear")}<',
@@ -1966,10 +2226,11 @@ function _(key) {{ return I18N[key] || key; }}
 </style>
 </head>
 <body>
-<div class="container">
+<div id="app-view" class="container hidden">
 {html_body}
 <div class="footer">Kiro API Proxy v1.7.16</div>
 </div>
+{HTML_LOGIN}
 <script>
 {js_i18n}
 {JS_SCRIPTS}
@@ -1991,10 +2252,11 @@ HTML_PAGE = get_html_page() if False else f'''<!DOCTYPE html>
 </style>
 </head>
 <body>
-<div class="container">
+<div id="app-view" class="container hidden">
 {HTML_BODY}
 <div class="footer">Kiro API Proxy v1.7.16</div>
 </div>
+{HTML_LOGIN}
 <script>
 {JS_SCRIPTS}
 </script>

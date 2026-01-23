@@ -146,5 +146,10 @@
     "msg.addFailed": "Add failed",
     "msg.scanFailed": "Scan failed",
     "msg.noTokensFound": "No token files found",
-    "msg.queryFailed": "Query failed"
+    "msg.queryFailed": "Query failed",
+    "login.subtitle": "Management Console",
+    "login.placeholder": "Enter password",
+    "login.submit": "Login",
+    "login.verifying": "Verifying...",
+    "login.error": "Incorrect password"
 }

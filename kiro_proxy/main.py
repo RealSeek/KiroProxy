@@ -3,6 +3,7 @@ import json
 import uuid
 import httpx
 import sys
+import time
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
@@ -11,8 +12,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import MODELS_URL
 from .core import state, scheduler, stats_manager, client_key_manager
+from .core.admin_auth import find_valid_token, update_token_last_used, hash_token, is_admin_password_configured
+from .core.persistence import load_config, save_config
 from .handlers import anthropic, openai, gemini, admin
 from .handlers import responses as responses_handler
+from .handlers import auth as auth_handler
 from .web import get_html_page
 from .credential import generate_machine_id, get_kiro_version
 
@@ -88,6 +92,81 @@ async def client_key_auth_middleware(request: Request, call_next):
             # 将 client_key 信息附加到 request.state（可选，用于日志）
             request.state.client_key_id = client_key.id
             request.state.client_key_name = client_key.name
+
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def admin_auth_middleware(request: Request, call_next):
+    """
+    管理员认证中间件
+
+    渐进式安全：
+    - 无密码配置时开放（向后兼容）
+    - 有密码配置时强制验证非白名单路由
+    """
+    path = request.url.path
+
+    # 根路由总是允许访问（包含登录页面）
+    if path == "/":
+        return await call_next(request)
+
+    # 白名单路由（无需认证）
+    whitelist_prefixes = [
+        "/v1/",                    # API 路由（已有 Client Key）
+        "/assets/",                # 静态资源
+        "/remote-login/",          # 远程登录页面
+        "/api/remote-login/",      # 远程登录 API
+        "/api/auth/login",         # 登录接口
+    ]
+
+    # 检查是否在白名单中
+    for prefix in whitelist_prefixes:
+        if path.startswith(prefix):
+            return await call_next(request)
+
+    # 渐进式安全：检查是否已配置管理员密码
+    if not is_admin_password_configured():
+        return await call_next(request)
+
+    # 提取 Authorization Token
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return JSONResponse(
+            status_code=401,
+            content={
+                "error": {
+                    "type": "authentication_error",
+                    "message": "需要管理员认证。请先登录。"
+                }
+            }
+        )
+
+    token = auth_header[7:]
+    token_hash = hash_token(token)
+
+    # 验证 Token
+    config = load_config()
+    now = time.time()
+
+    token_record = find_valid_token(config, token_hash, now)
+    if not token_record:
+        return JSONResponse(
+            status_code=401,
+            content={
+                "error": {
+                    "type": "authentication_error",
+                    "message": "Token 无效或已过期。请重新登录。"
+                }
+            }
+        )
+
+    # 更新最后使用时间
+    update_token_last_used(config, token_hash, now)
+    save_config(config)
+
+    # 将 token 信息附加到 request.state
+    request.state.admin_token_id = token_record.id
 
     return await call_next(request)
 
@@ -615,6 +694,32 @@ async def api_refresh_token(account_id: str):
 async def api_refresh_all_tokens():
     """刷新所有 Token"""
     return await admin.refresh_all_tokens()
+
+
+# ==================== 管理员认证 API ====================
+
+@app.post("/api/auth/login")
+async def api_auth_login(request: Request):
+    """管理员登录"""
+    return await auth_handler.login(request)
+
+
+@app.post("/api/auth/logout")
+async def api_auth_logout(request: Request):
+    """管理员登出"""
+    return await auth_handler.logout(request)
+
+
+@app.get("/api/auth/verify")
+async def api_auth_verify(request: Request):
+    """验证 Token 有效性"""
+    return await auth_handler.verify(request)
+
+
+@app.post("/api/auth/change-password")
+async def api_auth_change_password(request: Request):
+    """修改管理员密码"""
+    return await auth_handler.change_password(request)
 
 
 # ==================== 文档 API ====================
