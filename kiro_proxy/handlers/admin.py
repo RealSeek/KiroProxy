@@ -843,23 +843,37 @@ async def import_accounts(request: Request):
 
 
 async def add_manual_token(request: Request):
-    """手动添加 Token"""
+    """手动添加 Token（支持 Social 和 IDC 认证方式）"""
     body = await request.json()
     access_token = body.get("access_token", "").strip()
     refresh_token = body.get("refresh_token", "").strip()
     name = body.get("name", "手动添加账号")
-    
+    auth_method = body.get("auth_method", "social").lower()
+
     if not access_token:
         raise HTTPException(400, "缺少 access_token")
-    
+
+    # IDC 认证需要额外参数
+    client_id = body.get("client_id", "").strip() if auth_method == "idc" else None
+    client_secret = body.get("client_secret", "").strip() if auth_method == "idc" else None
+
+    if auth_method == "idc" and (not client_id or not client_secret):
+        raise HTTPException(400, "IDC 认证需要 client_id 和 client_secret")
+
     # 保存凭证到文件
-    file_path = await save_credentials_to_file({
+    credentials = {
         "accessToken": access_token,
         "refreshToken": refresh_token if refresh_token else None,
         "region": body.get("region", "us-east-1"),
-        "authMethod": "social",
-    }, f"manual-{uuid.uuid4().hex[:8]}")
-    
+        "authMethod": auth_method,
+    }
+
+    if auth_method == "idc":
+        credentials["clientId"] = client_id
+        credentials["clientSecret"] = client_secret
+
+    file_path = await save_credentials_to_file(credentials, f"manual-{uuid.uuid4().hex[:8]}")
+
     # 添加账号
     account = Account(
         id=uuid.uuid4().hex[:8],
@@ -869,7 +883,7 @@ async def add_manual_token(request: Request):
     state.accounts.append(account)
     account.load_credentials()
     state._save_accounts()
-    
+
     return {"ok": True, "account_id": account.id}
 
 

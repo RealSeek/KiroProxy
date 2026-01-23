@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import MODELS_URL
-from .core import state, scheduler, stats_manager
+from .core import state, scheduler, stats_manager, client_key_manager
 from .handlers import anthropic, openai, gemini, admin
 from .handlers import responses as responses_handler
 from .web import get_html_page
@@ -42,6 +42,54 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ==================== Client Key 认证中间件 ====================
+
+def extract_api_key(request: Request) -> str:
+    """从请求中提取 API Key"""
+    # 优先从 Authorization header 提取
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header[7:]
+    # 其次从 X-API-Key header 提取
+    return request.headers.get("X-API-Key", "")
+
+
+@app.middleware("http")
+async def client_key_auth_middleware(request: Request, call_next):
+    """
+    Client Key 认证中间件
+
+    渐进式安全：
+    - 无 Key 时开放（向后兼容）
+    - 有 Key 时强制验证 /v1/* 路由
+    """
+    path = request.url.path
+
+    # 仅拦截 /v1/* API 路由
+    if path.startswith("/v1/"):
+        # 渐进式安全：检查是否有启用的 Key
+        if client_key_manager.has_enabled_keys():
+            api_key = extract_api_key(request)
+            client_key = client_key_manager.validate_key(api_key)
+
+            if not client_key:
+                return JSONResponse(
+                    status_code=401,
+                    content={
+                        "error": {
+                            "type": "authentication_error",
+                            "message": "Invalid API key. Please provide a valid API key in the Authorization header."
+                        }
+                    }
+                )
+
+            # 将 client_key 信息附加到 request.state（可选，用于日志）
+            request.state.client_key_id = client_key.id
+            request.state.client_key_name = client_key.name
+
+    return await call_next(request)
 
 
 # ==================== Web UI ====================
@@ -481,6 +529,92 @@ async def api_update_rate_limit_config(request: Request):
         "global_max_requests_per_minute": limiter.config.global_max_requests_per_minute,
         "quota_cooldown_seconds": limiter.config.quota_cooldown_seconds,
     }}
+
+
+# ==================== Client Key 管理 API ====================
+
+@app.get("/api/client-keys")
+async def api_list_client_keys():
+    """获取所有 Client Key"""
+    return {
+        "ok": True,
+        "keys": client_key_manager.get_all_keys(),
+        "stats": client_key_manager.get_stats()
+    }
+
+
+@app.post("/api/client-keys")
+async def api_create_client_key(request: Request):
+    """创建新的 Client Key"""
+    data = await request.json()
+    name = data.get("name", "").strip()
+    custom_key = data.get("custom_key", "").strip() if data.get("custom_key") else None
+
+    if not name:
+        raise HTTPException(status_code=400, detail="名称不能为空")
+
+    try:
+        plain_key, client_key = client_key_manager.create_key(name, custom_key)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {
+        "ok": True,
+        "full_key": plain_key,  # 仅返回一次
+        "key": client_key.to_display_dict()
+    }
+
+
+@app.delete("/api/client-keys/{key_id}")
+async def api_delete_client_key(key_id: str):
+    """删除 Client Key"""
+    if client_key_manager.delete_key(key_id):
+        return {"ok": True}
+    raise HTTPException(status_code=404, detail="Key 不存在")
+
+
+@app.post("/api/client-keys/{key_id}/toggle")
+async def api_toggle_client_key(key_id: str):
+    """切换 Client Key 启用/禁用状态"""
+    new_state = client_key_manager.toggle_key(key_id)
+    if new_state is not None:
+        return {"ok": True, "enabled": new_state}
+    raise HTTPException(status_code=404, detail="Key 不存在")
+
+
+# ==================== Token 管理 API ====================
+
+@app.get("/api/tokens")
+async def api_list_tokens():
+    """获取所有 Token（账号）"""
+    return {
+        "ok": True,
+        "tokens": state.get_accounts_status()
+    }
+
+
+@app.post("/api/tokens")
+async def api_add_token(request: Request):
+    """添加新 Token（支持 Social/IdC）"""
+    return await admin.add_manual_token(request)
+
+
+@app.delete("/api/tokens/{account_id}")
+async def api_delete_token(account_id: str):
+    """删除 Token"""
+    return await admin.delete_account(account_id)
+
+
+@app.post("/api/tokens/{account_id}/refresh")
+async def api_refresh_token(account_id: str):
+    """刷新单个 Token"""
+    return await admin.refresh_account_token(account_id)
+
+
+@app.post("/api/tokens/refresh-all")
+async def api_refresh_all_tokens():
+    """刷新所有 Token"""
+    return await admin.refresh_all_tokens()
 
 
 # ==================== 文档 API ====================

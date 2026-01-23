@@ -71,6 +71,17 @@ CSS_ACCOUNTS = '''
 .account-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border); }
 '''
 
+CSS_CLIENTS = '''
+.client-key { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace; font-size: 0.8rem; background: var(--bg); padding: 0.25rem 0.5rem; border-radius: 4px; }
+.client-card { border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-bottom: 0.75rem; background: var(--card); }
+.client-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+.client-name { font-weight: 500; display: flex; align-items: center; gap: 0.5rem; }
+.client-meta { display: flex; flex-wrap: wrap; gap: 1rem; font-size: 0.8rem; color: var(--muted); }
+.client-actions { display: flex; gap: 0.5rem; margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border); }
+.key-display { display: flex; align-items: center; gap: 0.5rem; background: var(--bg); padding: 0.75rem 1rem; border-radius: 6px; margin: 1rem 0; }
+.key-display code { flex: 1; word-break: break-all; font-family: ui-monospace, SFMono-Regular, monospace; }
+'''
+
 CSS_API = '''
 .endpoint { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
 .method { padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
@@ -112,7 +123,7 @@ CSS_DOCS = '''
 }
 '''
 
-CSS_STYLES = CSS_BASE + CSS_LAYOUT + CSS_COMPONENTS + CSS_FORMS + CSS_ACCOUNTS + CSS_API + CSS_DOCS
+CSS_STYLES = CSS_BASE + CSS_LAYOUT + CSS_COMPONENTS + CSS_FORMS + CSS_ACCOUNTS + CSS_CLIENTS + CSS_API + CSS_DOCS
 
 
 # ==================== HTML 模板 ====================
@@ -132,6 +143,7 @@ HTML_HEADER = '''
   <div class="tab" data-tab="flows">流量</div>
   <div class="tab" data-tab="monitor">监控</div>
   <div class="tab" data-tab="accounts">账号</div>
+  <div class="tab" data-tab="clients">客户端</div>
   <div class="tab" data-tab="logs">日志</div>
   <div class="tab" data-tab="api">API</div>
   <div class="tab" data-tab="settings">设置</div>
@@ -264,12 +276,29 @@ HTML_ACCOUNTS = '''
       <input type="text" id="manualName" placeholder="我的账号" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text)">
     </div>
     <div style="margin-bottom:1rem">
+      <label style="display:block;font-size:0.875rem;color:var(--muted);margin-bottom:0.25rem">认证方式</label>
+      <select id="manualAuthMethod" onchange="toggleIdcFields()" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text)">
+        <option value="social">Social (Google/GitHub)</option>
+        <option value="idc">IDC (Identity Center)</option>
+      </select>
+    </div>
+    <div style="margin-bottom:1rem">
       <label style="display:block;font-size:0.875rem;color:var(--muted);margin-bottom:0.25rem">Access Token *</label>
       <textarea id="manualAccessToken" placeholder="粘贴 accessToken..." style="width:100%;height:80px;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text);font-family:monospace;font-size:0.8rem"></textarea>
     </div>
     <div style="margin-bottom:1rem">
       <label style="display:block;font-size:0.875rem;color:var(--muted);margin-bottom:0.25rem">Refresh Token（可选）</label>
       <textarea id="manualRefreshToken" placeholder="粘贴 refreshToken..." style="width:100%;height:80px;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text);font-family:monospace;font-size:0.8rem"></textarea>
+    </div>
+    <div id="idcFields" style="display:none">
+      <div style="margin-bottom:1rem">
+        <label style="display:block;font-size:0.875rem;color:var(--muted);margin-bottom:0.25rem">Client ID * (IDC)</label>
+        <input type="text" id="manualClientId" placeholder="IDC Client ID" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text);font-family:monospace">
+      </div>
+      <div style="margin-bottom:1rem">
+        <label style="display:block;font-size:0.875rem;color:var(--muted);margin-bottom:0.25rem">Client Secret * (IDC)</label>
+        <input type="password" id="manualClientSecret" placeholder="IDC Client Secret" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text);font-family:monospace">
+      </div>
     </div>
     <p style="color:var(--muted);font-size:0.75rem;margin-bottom:1rem">Token 可从 ~/.aws/sso/cache/ 目录下的 JSON 文件中获取</p>
     <button onclick="submitManualToken()">添加账号</button>
@@ -534,7 +563,43 @@ HTML_SETTINGS = '''
 </div>
 '''
 
-HTML_BODY = HTML_HEADER + HTML_HELP + HTML_FLOWS + HTML_MONITOR + HTML_ACCOUNTS + HTML_LOGS + HTML_API + HTML_SETTINGS
+HTML_CLIENTS = '''
+<div class="panel" id="clients">
+  <div class="card">
+    <h3>Client Key 统计 <button class="secondary small" onclick="loadClients()">刷新</button></h3>
+    <div class="stats-grid" id="clientStatsGrid">
+      <div class="stat-item"><div class="stat-value" id="totalKeys">-</div><div class="stat-label">总 Key 数</div></div>
+      <div class="stat-item"><div class="stat-value" id="activeKeys">-</div><div class="stat-label">活跃 Key</div></div>
+      <div class="stat-item"><div class="stat-value" id="totalClientRequests">-</div><div class="stat-label">总请求数</div></div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>创建 Client Key</h3>
+    <p style="font-size:0.8rem;color:var(--muted);margin-bottom:1rem">创建 API 访问密钥。启用后，所有 /v1/* API 请求需要携带有效的 Key。</p>
+    <div style="margin-bottom:0.75rem">
+      <input type="text" id="newKeyName" placeholder="Key 名称（如：我的笔记本）" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text)">
+    </div>
+    <div style="margin-bottom:0.75rem">
+      <input type="text" id="customKey" placeholder="自定义 Key（可选，留空则自动生成）" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text);font-family:monospace">
+      <p style="font-size:0.7rem;color:var(--muted);margin-top:0.25rem">自定义 Key 可以是任意字符串，如 sk-xxx 或其他格式</p>
+    </div>
+    <button onclick="createClientKey()">创建 Key</button>
+    <div id="newKeyDisplay" style="display:none">
+      <div class="key-display">
+        <code id="newKeyValue"></code>
+        <button class="small" onclick="copy($('#newKeyValue').textContent)">复制</button>
+      </div>
+      <p style="font-size:0.75rem;color:var(--warn)">请立即复制保存此 Key，关闭后将无法再次查看！</p>
+    </div>
+  </div>
+  <div class="card">
+    <h3>Key 列表</h3>
+    <div id="clientKeyList"></div>
+  </div>
+</div>
+'''
+
+HTML_BODY = HTML_HEADER + HTML_HELP + HTML_FLOWS + HTML_MONITOR + HTML_ACCOUNTS + HTML_CLIENTS + HTML_LOGS + HTML_API + HTML_SETTINGS
 
 
 # ==================== JavaScript ====================
@@ -605,6 +670,7 @@ $$('.tab').forEach(t=>t.onclick=()=>{
   if(t.dataset.tab==='monitor'){loadStats();loadQuota();}
   if(t.dataset.tab==='logs')loadLogs();
   if(t.dataset.tab==='accounts')loadAccounts();
+  if(t.dataset.tab==='clients')loadClients();
   if(t.dataset.tab==='flows'){loadFlowStats();loadFlows();}
 });
 '''
@@ -1034,20 +1100,41 @@ function startRemoteLoginPoll(sessionId){
 function showManualAdd(){
   $('#manualAddPanel').style.display='block';
   $('#manualName').value='';
+  $('#manualAuthMethod').value='social';
   $('#manualAccessToken').value='';
   $('#manualRefreshToken').value='';
+  $('#manualClientId').value='';
+  $('#manualClientSecret').value='';
+  $('#idcFields').style.display='none';
+}
+
+function toggleIdcFields(){
+  const authMethod=$('#manualAuthMethod').value;
+  $('#idcFields').style.display=authMethod==='idc'?'block':'none';
 }
 
 async function submitManualToken(){
   const name=$('#manualName').value||'手动添加账号';
+  const authMethod=$('#manualAuthMethod').value;
   const accessToken=$('#manualAccessToken').value.trim();
   const refreshToken=$('#manualRefreshToken').value.trim();
   if(!accessToken){alert('请输入 Access Token');return;}
+
+  const payload={name,auth_method:authMethod,access_token:accessToken,refresh_token:refreshToken};
+
+  if(authMethod==='idc'){
+    const clientId=$('#manualClientId').value.trim();
+    const clientSecret=$('#manualClientSecret').value.trim();
+    if(!clientId||!clientSecret){alert('IDC 认证需要 Client ID 和 Client Secret');return;}
+    payload.client_id=clientId;
+    payload.client_secret=clientSecret;
+  }
+
   try{
     const r=await fetch('/api/accounts/manual',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({name,access_token:accessToken,refresh_token:refreshToken})
+      body:JSON.stringify(payload)
     });
     const d=await r.json();
     if(d.ok){
@@ -1491,7 +1578,96 @@ loadHistoryConfig();
 loadRateLimitConfig();
 '''
 
-JS_SCRIPTS = JS_UTILS + JS_TABS + JS_STATUS + JS_DOCS + JS_STATS + JS_LOGS + JS_ACCOUNTS + JS_LOGIN + JS_FLOWS + JS_SETTINGS
+JS_CLIENTS = '''
+// Client Keys 管理
+async function loadClients(){
+  try{
+    const res=await fetch('/api/client-keys');
+    const data=await res.json();
+    if(data.ok){
+      // 更新统计
+      $('#totalKeys').textContent=data.stats.total_keys;
+      $('#activeKeys').textContent=data.stats.active_keys;
+      $('#totalClientRequests').textContent=data.stats.total_requests;
+      // 渲染列表
+      renderClientKeys(data.keys);
+    }
+  }catch(e){console.error('Load clients failed:',e)}
+}
+
+function renderClientKeys(keys){
+  const container=$('#clientKeyList');
+  if(!keys||keys.length===0){
+    container.innerHTML=`<p style="color:var(--muted);text-align:center;padding:2rem">${_('clients.noKeys')}</p>`;
+    return;
+  }
+  container.innerHTML=keys.map(k=>`
+    <div class="client-card">
+      <div class="client-header">
+        <div class="client-name">
+          <span>${escapeHtml(k.name)}</span>
+          <span class="badge ${k.enabled?'success':'error'}">${k.enabled?_('common.enabled'):_('common.disabled')}</span>
+        </div>
+        <span class="client-key">${k.prefix}</span>
+      </div>
+      <div class="client-meta">
+        <span>${_('clients.created')}: ${new Date(k.created_at*1000).toLocaleDateString()}</span>
+        <span>${_('clients.lastUsed')}: ${k.last_used_at?new Date(k.last_used_at*1000).toLocaleString():_('clients.never')}</span>
+        <span>${_('clients.requests')}: ${k.usage_count}</span>
+      </div>
+      <div class="client-actions">
+        <button class="small secondary" onclick="toggleClientKey('${k.id}')">${k.enabled?_('common.disabled'):_('common.enabled')}</button>
+        <button class="small secondary" onclick="deleteClientKey('${k.id}')">${_('common.delete')}</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function createClientKey(){
+  const name=$('#newKeyName').value.trim();
+  const customKey=$('#customKey').value.trim();
+  if(!name){alert(_('clients.enterName'));return;}
+  try{
+    const payload={name};
+    if(customKey)payload.custom_key=customKey;
+    const res=await fetch('/api/client-keys',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(payload)
+    });
+    const data=await res.json();
+    if(data.ok){
+      // 显示新创建的 Key
+      $('#newKeyValue').textContent=data.full_key;
+      $('#newKeyDisplay').style.display='block';
+      $('#newKeyName').value='';
+      $('#customKey').value='';
+      loadClients();
+    }else{
+      alert(data.detail||_('clients.createFailed'));
+    }
+  }catch(e){console.error('Create client key failed:',e);alert(_('clients.createFailed'));}
+}
+
+async function toggleClientKey(id){
+  try{
+    const res=await fetch(`/api/client-keys/${id}/toggle`,{method:'POST'});
+    const data=await res.json();
+    if(data.ok)loadClients();
+  }catch(e){console.error('Toggle client key failed:',e)}
+}
+
+async function deleteClientKey(id){
+  if(!confirm(_('msg.confirmDelete')))return;
+  try{
+    const res=await fetch(`/api/client-keys/${id}`,{method:'DELETE'});
+    const data=await res.json();
+    if(data.ok)loadClients();
+  }catch(e){console.error('Delete client key failed:',e)}
+}
+'''
+
+JS_SCRIPTS = JS_UTILS + JS_TABS + JS_STATUS + JS_DOCS + JS_STATS + JS_LOGS + JS_ACCOUNTS + JS_LOGIN + JS_FLOWS + JS_SETTINGS + JS_CLIENTS
 
 
 # ==================== 组装最终 HTML ====================
@@ -1583,7 +1759,14 @@ const I18N = {{
   "warning.smartSummary.title": "{'Disable Smart Summary Strategy' if lang == 'en' else '关闭智能摘要策略'}",
   "warning.smartSummary.message": "{'When disabled, the proxy will not use AI to summarize early conversations. No extra API calls will be made.' if lang == 'en' else '关闭此策略后，代理将不会用 AI 生成早期对话摘要。不会产生额外的 API 调用。'}",
   "warning.preEstimate.title": "{'Disable Pre-estimate Strategy' if lang == 'en' else '关闭预估检测策略'}",
-  "warning.preEstimate.message": "{'When disabled, the proxy will not estimate token count before sending. Recommend: Enable Error Retry if disabling this.' if lang == 'en' else '关闭此策略后，代理将不会在发送前预估 token 数量。建议：如果关闭此策略，请启用错误重试。'}"
+  "warning.preEstimate.message": "{'When disabled, the proxy will not estimate token count before sending. Recommend: Enable Error Retry if disabling this.' if lang == 'en' else '关闭此策略后，代理将不会在发送前预估 token 数量。建议：如果关闭此策略，请启用错误重试。'}",
+  "clients.noKeys": "{'No Client Keys yet, create one to get started' if lang == 'en' else '暂无 Client Key，创建一个开始使用'}",
+  "clients.created": "{'Created' if lang == 'en' else '创建'}",
+  "clients.lastUsed": "{'Last used' if lang == 'en' else '最后使用'}",
+  "clients.never": "{'Never' if lang == 'en' else '从未'}",
+  "clients.requests": "{'Requests' if lang == 'en' else '请求次数'}",
+  "clients.enterName": "{'Please enter a Key name' if lang == 'en' else '请输入 Key 名称'}",
+  "clients.createFailed": "{'Create failed' if lang == 'en' else '创建失败'}"
 }};
 function _(key) {{ return I18N[key] || key; }}
 '''
@@ -1605,6 +1788,7 @@ function _(key) {{ return I18N[key] || key; }}
   <div class="tab" data-tab="flows">{t('tab.flows')}</div>
   <div class="tab" data-tab="monitor">{t('tab.monitor')}</div>
   <div class="tab" data-tab="accounts">{t('tab.accounts')}</div>
+  <div class="tab" data-tab="clients">{t('tab.clients') if t('tab.clients') != 'tab.clients' else ('Clients' if lang == 'en' else '客户端')}</div>
   <div class="tab" data-tab="logs">{t('tab.logs')}</div>
   <div class="tab" data-tab="api">API</div>
   <div class="tab" data-tab="settings">{t('tab.settings')}</div>
@@ -1749,10 +1933,22 @@ function _(key) {{ return I18N[key] || key; }}
         '# 写入 Claude Code 配置文件': f'# {"Write to Claude Code config file" if lang == "en" else "写入 Claude Code 配置文件"}',
         '# 删除 Claude Code 配置': f'# {"Delete Claude Code config" if lang == "en" else "删除 Claude Code 配置"}',
         '使用 <code>ANTHROPIC_AUTH_TOKEN</code> + <code>CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1</code> 可跳过登录': f'{"Use " if lang == "en" else "使用 "}<code>ANTHROPIC_AUTH_TOKEN</code> + <code>CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1</code> {"to skip login" if lang == "en" else "可跳过登录"}',
+        # Clients Tab
+        '>客户端<': f'>{"Clients" if lang == "en" else "客户端"}<',
+        '>Client Key 统计': f'>{"Client Key Stats" if lang == "en" else "Client Key 统计"}',
+        '>总 Key 数<': f'>{"Total Keys" if lang == "en" else "总 Key 数"}<',
+        '>活跃 Key<': f'>{"Active Keys" if lang == "en" else "活跃 Key"}<',
+        '>总请求数<': f'>{"Total Requests" if lang == "en" else "总请求数"}<',
+        '>创建 Client Key<': f'>{"Create Client Key" if lang == "en" else "创建 Client Key"}<',
+        '创建 API 访问密钥。启用后，所有 /v1/* API 请求需要携带有效的 Key。': f'{"Create API access keys. Once enabled, all /v1/* API requests require a valid Key." if lang == "en" else "创建 API 访问密钥。启用后，所有 /v1/* API 请求需要携带有效的 Key。"}',
+        'Key 名称（如：我的笔记本）': f'{"Key name (e.g., My Laptop)" if lang == "en" else "Key 名称（如：我的笔记本）"}',
+        '>创建 Key<': f'>{"Create Key" if lang == "en" else "创建 Key"}<',
+        '请立即复制保存此 Key，关闭后将无法再次查看！': f'{"Please copy and save this Key now. It cannot be viewed again after closing!" if lang == "en" else "请立即复制保存此 Key，关闭后将无法再次查看！"}',
+        '>Key 列表<': f'>{"Key List" if lang == "en" else "Key 列表"}<',
     }
-    
+
     # 组装并翻译 HTML
-    html_content = HTML_HELP + HTML_FLOWS + HTML_MONITOR + HTML_ACCOUNTS + HTML_LOGS + HTML_API + HTML_SETTINGS
+    html_content = HTML_HELP + HTML_FLOWS + HTML_MONITOR + HTML_ACCOUNTS + HTML_CLIENTS + HTML_LOGS + HTML_API + HTML_SETTINGS
     for zh, translated in translations.items():
         html_content = html_content.replace(zh, translated)
     

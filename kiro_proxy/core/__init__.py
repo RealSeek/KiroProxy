@@ -18,6 +18,7 @@ from .error_handler import (
     get_anthropic_error_response, format_error_log
 )
 from .rate_limiter import RateLimiter, RateLimitConfig, rate_limiter, get_rate_limiter
+from .client_keys import ClientKeyManager, ClientKey, client_key_manager
 
 __all__ = [
     "state", "ProxyState", "RequestLog", "Account", 
@@ -32,5 +33,6 @@ __all__ = [
     "is_content_length_error",
     "ErrorType", "KiroError", "classify_error", "is_account_suspended",
     "get_anthropic_error_response", "format_error_log",
-    "RateLimiter", "RateLimitConfig", "rate_limiter", "get_rate_limiter"
+    "RateLimiter", "RateLimitConfig", "rate_limiter", "get_rate_limiter",
+    "ClientKeyManager", "ClientKey", "client_key_manager"
 ]
