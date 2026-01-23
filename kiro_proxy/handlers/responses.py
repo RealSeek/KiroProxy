@@ -223,19 +223,7 @@ def _convert_responses_input_to_kiro(input_data, instructions: str = None):
                     # assistant 没有 toolUses 但 user 有 toolResults，清除 toolResults
                     print(f"[Responses] Warning: history[{i}] has no toolUses but history[{i+1}] has toolResults, removing toolResults")
                     user.pop("userInputMessageContext", None)
-    
-    # 调试日志
-    print(f"[Responses] Converted: history={len(history)}, tool_results={len(tool_results)}")
-    for i, h in enumerate(history):
-        if "userInputMessage" in h:
-            has_tr = "toolResults" in h.get("userInputMessage", {}).get("userInputMessageContext", {})
-            print(f"[Responses]   history[{i}]: userInputMessage, has_toolResults={has_tr}")
-        elif "assistantResponseMessage" in h:
-            arm = h.get("assistantResponseMessage", {})
-            has_tu_field = "toolUses" in arm
-            tu_count = len(arm.get("toolUses", []) or []) if has_tu_field else 0
-            print(f"[Responses]   history[{i}]: assistantResponseMessage, has_toolUses_field={has_tu_field}, toolUses_count={tu_count}")
-    
+
     images = pending_images if pending_images else None
     return user_content, history, tool_results, images
 
@@ -430,51 +418,33 @@ async def handle_responses(request: Request):
         print(f"[Responses] {history_manager.truncate_info}")
     
     kiro_tools = _convert_tools_to_kiro(tools)
-    
-    # 调试：打印 input 结构
-    if isinstance(input_data, list):
-        for i, item in enumerate(input_data):
-            item_type = item.get("type", "?")
-            role = item.get("role", "?")
-            print(f"[Responses] input[{i}]: type={item_type}, role={role}")
-        print(f"[Responses] history len: {len(history)}, tool_results len: {len(tool_results)}, images: {len(images) if images else 0}")
-        print(f"[Responses] user_content len: {len(user_content)}")
-    
+
     # 验证 tool_results 与 history 的一致性
     if tool_results and history:
         # 找到最后一个 assistant 消息
         last_assistant = None
-        last_assistant_idx = -1
         for i, msg in enumerate(reversed(history)):
             if "assistantResponseMessage" in msg:
                 last_assistant = msg["assistantResponseMessage"]
-                last_assistant_idx = len(history) - 1 - i
                 break
-        
+
         if last_assistant:
             tool_use_ids = set()
             for tu in last_assistant.get("toolUses", []) or []:
                 tu_id = tu.get("toolUseId")
                 if tu_id:
                     tool_use_ids.add(tu_id)
-            
-            print(f"[Responses] Last assistant at idx={last_assistant_idx}, toolUse_ids={tool_use_ids}")
-            print(f"[Responses] tool_results ids={[tr.get('toolUseId') for tr in tool_results]}")
-            
+
             # 过滤 tool_results，只保留有对应 toolUse 的
             if tool_use_ids:
                 filtered_results = [tr for tr in tool_results if tr.get("toolUseId") in tool_use_ids]
-                if len(filtered_results) != len(tool_results):
-                    print(f"[Responses] Filtered tool_results: {len(tool_results)} -> {len(filtered_results)}")
-                    tool_results = filtered_results
+                tool_results = filtered_results
             else:
                 # 如果最后一个 assistant 没有 toolUses，清空 tool_results
-                print(f"[Responses] Warning: Last assistant has no toolUses, clearing tool_results")
                 tool_results = []
         else:
-            print(f"[Responses] Warning: No assistant message in history, clearing tool_results")
             tool_results = []
-    
+
     # 确保所有消息都有非空的 content
     for i, msg in enumerate(history):
         if "userInputMessage" in msg:
@@ -503,13 +473,6 @@ async def handle_responses(request: Request):
                 "currentMessage": kiro_request.get("conversationState", {}).get("currentMessage", {}),
             }
         })
-        # 移除 tools 以便打印（只在 debug_request 中）
-        if "userInputMessageContext" in debug_request["conversationState"]["currentMessage"].get("userInputMessage", {}):
-            ctx = debug_request["conversationState"]["currentMessage"]["userInputMessage"]["userInputMessageContext"]
-            if "tools" in ctx:
-                ctx["tools_count"] = len(ctx["tools"])
-                del ctx["tools"]
-        print(f"[Responses] Kiro request structure: {json.dumps(debug_request, indent=2)}")
     
     if stream:
         return await _handle_stream(kiro_request, headers, account, model, log_id, start_time)
@@ -563,16 +526,7 @@ def _build_response(result: dict, model: str, response_id: str) -> dict:
 
 async def _handle_stream(kiro_request, headers, account, model, log_id, start_time):
     """流式处理 - Codex 期望的 SSE 格式"""
-    
-    # 保存完整请求用于调试
-    import os
-    debug_dir = "debug_requests"
-    os.makedirs(debug_dir, exist_ok=True)
-    debug_file = f"{debug_dir}/{log_id}_request.json"
-    with open(debug_file, 'w', encoding='utf-8') as f:
-        json.dump(kiro_request, f, indent=2, ensure_ascii=False)
-    print(f"[Responses] Saved request to {debug_file}")
-    
+
     async def generate():
         response_id = f"resp_{log_id}"
         item_id = f"msg_{log_id}"
@@ -580,60 +534,18 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
         full_content = ""
         tool_uses = []
         error_occurred = False
-        
-        print(f"[Responses] Request: model={model}, log_id={log_id}")
-        
+
         try:
             async with httpx.AsyncClient(verify=False, timeout=300) as client:
                 async with client.stream("POST", KIRO_API_URL, json=kiro_request, headers=headers) as response:
-                    
+
                     if response.status_code != 200:
                         error_text = await response.aread()
                         error_msg = error_text.decode()[:500]
                         print(f"[Responses] Kiro error: {response.status_code} - {error_msg[:200]}")
-                        
-                        # 打印更多调试信息
-                        if response.status_code == 400:
-                            cs = kiro_request.get("conversationState", {})
-                            hist = cs.get("history", [])
-                            print(f"[Responses] 400 Debug: history_len={len(hist)}")
-                            if hist:
-                                # 检查每条 history 的详细结构
-                                for i, h in enumerate(hist[:5]):  # 只打印前5条
-                                    if "userInputMessage" in h:
-                                        uim = h["userInputMessage"]
-                                        has_ctx = "userInputMessageContext" in uim
-                                        has_tr = has_ctx and "toolResults" in uim.get("userInputMessageContext", {})
-                                        content_len = len(uim.get("content", ""))
-                                        uim_keys = list(uim.keys())
-                                        print(f"[Responses]   hist[{i}]: user, keys={uim_keys}, content_len={content_len}, has_toolResults={has_tr}")
-                                    elif "assistantResponseMessage" in h:
-                                        arm = h["assistantResponseMessage"]
-                                        arm_keys = list(arm.keys())
-                                        has_tu = "toolUses" in arm
-                                        tu_count = len(arm.get("toolUses", []) or []) if has_tu else 0
-                                        content_len = len(arm.get("content", "") or "")
-                                        print(f"[Responses]   hist[{i}]: assistant, keys={arm_keys}, content_len={content_len}, has_toolUses={has_tu}, toolUses_count={tu_count}")
-                                    else:
-                                        print(f"[Responses]   hist[{i}]: UNKNOWN keys={list(h.keys())}")
-                                if len(hist) > 5:
-                                    print(f"[Responses]   ... ({len(hist) - 5} more)")
-                            
-                            # 打印 currentMessage 结构
-                            cm = cs.get("currentMessage", {})
-                            if "userInputMessage" in cm:
-                                uim = cm["userInputMessage"]
-                                print(f"[Responses] currentMessage: keys={list(uim.keys())}, content_len={len(uim.get('content', ''))}")
-                                if "userInputMessageContext" in uim:
-                                    ctx = uim["userInputMessageContext"]
-                                    print(f"[Responses]   context keys={list(ctx.keys())}")
-                                    if "toolResults" in ctx:
-                                        print(f"[Responses]   toolResults count={len(ctx['toolResults'])}")
-                                    if "tools" in ctx:
-                                        print(f"[Responses]   tools count={len(ctx['tools'])}")
-                        
+
                         error_occurred = True
-                        
+
                         # 映射错误代码
                         error_code = "api_error"
                         error_lower = error_msg.lower()
@@ -645,7 +557,7 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                             error_code = "insufficient_quota"
                         elif response.status_code == 401 or response.status_code == 403:
                             error_code = "authentication_error"
-                        
+
                         yield _sse("response.failed", {
                             "type": "response.failed",
                             "response": {

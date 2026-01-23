@@ -123,10 +123,7 @@ async def handle_messages(request: Request):
     system = body.get("system", "")
     stream = body.get("stream", False)
     tools = body.get("tools", [])
-    
-    # 调试：打印原始请求的关键信息
-    print(f"[Anthropic] Request: model={body.get('model')} -> {model}, messages={len(messages)}, stream={stream}, tools={len(tools)}")
-    
+
     if not messages:
         raise HTTPException(400, "messages required")
     
@@ -170,7 +167,6 @@ async def handle_messages(request: Request):
 
     # 检查是否为 WebSearch 请求
     if has_web_search_tool(tools):
-        print(f"[Anthropic] 检测到 WebSearch 工具，路由到 WebSearch 处理")
         # 过滤掉 web_search 工具，保留其他工具（如果有的话）
         other_tools = filter_web_search_tools(tools)
         if other_tools:
@@ -262,7 +258,7 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                             
                             if flow_id:
                                 flow_monitor.fail_flow(flow_id, "rate_limit_error", "All accounts rate limited", 429)
-                            yield f'data: {{"type":"error","error":{{"type":"rate_limit_error","message":"All accounts rate limited"}}}}\n\n'
+                            yield f'event: error\ndata: {{"type":"error","error":{{"type":"rate_limit_error","message":"All accounts rate limited"}}}}\n\n'
                             return
 
                         # 处理可重试的服务端错误
@@ -275,40 +271,14 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                                 continue
                             if flow_id:
                                 flow_monitor.fail_flow(flow_id, "api_error", "Server error after retries", response.status_code)
-                            yield f'data: {{"type":"error","error":{{"type":"api_error","message":"Server error after retries"}}}}\n\n'
+                            yield f'event: error\ndata: {{"type":"error","error":{{"type":"api_error","message":"Server error after retries"}}}}\n\n'
                             return
 
                         if response.status_code != 200:
                             error_text = await response.aread()
                             error_str = error_text.decode()
-                            print(f"=== Kiro API Error ===")
-                            print(f"Status: {response.status_code}")
-                            print(f"Response: {error_str[:500]}")
-                            print(f"Request model: {model}")
-                            print(f"History len: {len(history) if history else 0}")
-                            print(f"Tool results: {len(tool_results) if tool_results else 0}")
-                            # 对于 400 错误，打印更多请求细节
-                            if response.status_code == 400:
-                                print(f"Kiro request keys: {list(kiro_request.keys())}")
-                                if 'conversationState' in kiro_request:
-                                    cs = kiro_request['conversationState']
-                                    print(f"  conversationState keys: {list(cs.keys())}")
-                                    if 'currentMessage' in cs:
-                                        cm = cs['currentMessage']
-                                        print(f"  currentMessage keys: {list(cm.keys())}")
-                                        if 'userInputMessage' in cm:
-                                            uim = cm['userInputMessage']
-                                            print(f"  userInputMessage keys: {list(uim.keys())}")
-                                            content = uim.get('content', '')
-                                            print(f"  content (first 200 chars): {str(content)[:200]}")
-                                    if 'history' in cs:
-                                        hist = cs['history']
-                                        print(f"  history count: {len(hist) if hist else 0}")
-                                        if hist:
-                                            for i, h in enumerate(hist[:3]):
-                                                print(f"    history[{i}] keys: {list(h.keys()) if isinstance(h, dict) else type(h)}")
-                            print(f"======================")
-                            
+                            print(f"[Stream] Kiro API error {response.status_code}: {error_str[:200]}")
+
                             # 使用统一的错误处理
                             http_status, error_type, error_msg, error_obj = _handle_kiro_error(
                                 response.status_code, error_str, current_account
@@ -345,7 +315,7 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                             
                             if flow_id:
                                 flow_monitor.fail_flow(flow_id, error_type, error_msg, response.status_code, error_str)
-                            yield f'data: {{"type":"error","error":{{"type":"{error_type}","message":"{error_msg}"}}}}\n\n'
+                            yield f'event: error\ndata: {{"type":"error","error":{{"type":"{error_type}","message":"{error_msg}"}}}}\n\n'
                             return
 
                         # 标记开始流式传输
@@ -354,12 +324,14 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
 
                         # 正常处理响应
                         msg_id = f"msg_{log_id}"
-                        yield f'data: {{"type":"message_start","message":{{"id":"{msg_id}","type":"message","role":"assistant","content":[],"model":"{model}","stop_reason":null,"stop_sequence":null,"usage":{{"input_tokens":0,"output_tokens":0}}}}}}\n\n'
-                        yield f'data: {{"type":"content_block_start","index":0,"content_block":{{"type":"text","text":""}}}}\n\n'
+                        yield f'event: message_start\ndata: {{"type":"message_start","message":{{"id":"{msg_id}","type":"message","role":"assistant","content":[],"model":"{model}","stop_reason":null,"stop_sequence":null,"usage":{{"input_tokens":0,"output_tokens":0}}}}}}\n\n'
+                        yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":0,"content_block":{{"type":"text","text":""}}}}\n\n'
 
                         full_response = b""
+                        chunk_count = 0
 
                         async for chunk in response.aiter_bytes():
+                            chunk_count += 1
                             full_response += chunk
 
                             try:
@@ -386,7 +358,8 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                                                 full_content += content
                                                 if flow_id:
                                                     flow_monitor.add_chunk(flow_id, content)
-                                                yield f'data: {{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":{json.dumps(content)}}}}}\n\n'
+                                                sse_event = f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":{json.dumps(content)}}}}}\n\n'
+                                                yield sse_event
                                         except Exception:
                                             pass
                                     pos += total_len
@@ -395,17 +368,24 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
 
                         result = parse_event_stream_full(full_response)
 
-                        yield f'data: {{"type":"content_block_stop","index":0}}\n\n'
+                        # 如果流式解析没有提取到内容，使用完整解析的结果
+                        parsed_content = "".join(result.get("content", []))
+                        if not full_content and parsed_content:
+                            full_content = parsed_content
+                            # 补发内容 delta
+                            yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":{json.dumps(full_content)}}}}}\n\n'
+
+                        yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":0}}\n\n'
 
                         if result["tool_uses"]:
                             for i, tool_use in enumerate(result["tool_uses"], 1):
-                                yield f'data: {{"type":"content_block_start","index":{i},"content_block":{{"type":"tool_use","id":"{tool_use["id"]}","name":"{tool_use["name"]}","input":{{}}}}}}\n\n'
-                                yield f'data: {{"type":"content_block_delta","index":{i},"delta":{{"type":"input_json_delta","partial_json":{json.dumps(json.dumps(tool_use["input"]))}}}}}\n\n'
-                                yield f'data: {{"type":"content_block_stop","index":{i}}}\n\n'
+                                yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{i},"content_block":{{"type":"tool_use","id":"{tool_use["id"]}","name":"{tool_use["name"]}","input":{{}}}}}}\n\n'
+                                yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{i},"delta":{{"type":"input_json_delta","partial_json":{json.dumps(json.dumps(tool_use["input"]))}}}}}\n\n'
+                                yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":{i}}}\n\n'
 
                         stop_reason = result["stop_reason"]
-                        yield f'data: {{"type":"message_delta","delta":{{"stop_reason":"{stop_reason}","stop_sequence":null}},"usage":{{"output_tokens":100}}}}\n\n'
-                        yield f'data: {{"type":"message_stop"}}\n\n'
+                        yield f'event: message_delta\ndata: {{"type":"message_delta","delta":{{"stop_reason":"{stop_reason}","stop_sequence":null}},"usage":{{"output_tokens":100}}}}\n\n'
+                        yield f'event: message_stop\ndata: {{"type":"message_stop"}}\n\n'
 
                         # 完成 Flow
                         if flow_id:
@@ -435,7 +415,7 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                     continue
                 if flow_id:
                     flow_monitor.fail_flow(flow_id, "timeout_error", "Request timeout after retries", 408)
-                yield f'data: {{"type":"error","error":{{"type":"api_error","message":"Request timeout after retries"}}}}\n\n'
+                yield f'event: error\ndata: {{"type":"error","error":{{"type":"api_error","message":"Request timeout after retries"}}}}\n\n'
                 return
             except httpx.ConnectError:
                 if retry_count < max_retries:
@@ -446,7 +426,7 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                     continue
                 if flow_id:
                     flow_monitor.fail_flow(flow_id, "connection_error", "Connection error after retries", 502)
-                yield f'data: {{"type":"error","error":{{"type":"api_error","message":"Connection error after retries"}}}}\n\n'
+                yield f'event: error\ndata: {{"type":"error","error":{{"type":"api_error","message":"Connection error after retries"}}}}\n\n'
                 return
             except Exception as e:
                 # 检查是否为可重试的网络错误
@@ -458,7 +438,7 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                     continue
                 if flow_id:
                     flow_monitor.fail_flow(flow_id, "api_error", str(e), 500)
-                yield f'data: {{"type":"error","error":{{"type":"api_error","message":"{str(e)}"}}}}\n\n'
+                yield f'event: error\ndata: {{"type":"error","error":{{"type":"api_error","message":"{str(e)}"}}}}\n\n'
                 return
 
     return StreamingResponse(generate(), media_type="text/event-stream")
