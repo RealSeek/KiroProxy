@@ -1082,7 +1082,7 @@ async function runSpeedtest(){
   try{
     const r=await fetch('/api/speedtest',{method:'POST'});
     const d=await r.json();
-    $('#speedtestResult').textContent=d.ok?`${_('monitor.latency')}: ${d.latency_ms.toFixed(0)}ms (${d.account_id})`:_('monitor.testFailed')+': '+d.error;
+    $('#speedtestResult').textContent=d.ok?`${_('monitor.latency')}: ${d.latency_ms.toFixed(0)}ms (${d.account_id})`:_('monitor.testFailed')+': '+(d.error||'HTTP '+d.status||'Unknown error');
   }catch(e){$('#speedtestResult').textContent=_('monitor.testFailed')}
   $('#speedtestBtn').disabled=false;
 }

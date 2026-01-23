@@ -188,12 +188,15 @@ async def speedtest():
         async with httpx.AsyncClient(verify=False, timeout=10) as client:
             resp = await client.get(MODELS_URL, headers=headers, params={"origin": "AI_EDITOR"})
             latency = (time.time() - start) * 1000
-            return {
+            result = {
                 "ok": resp.status_code == 200,
                 "latency_ms": round(latency, 2),
                 "status": resp.status_code,
                 "account_id": account.id
             }
+            if resp.status_code != 200:
+                result["error"] = f"HTTP {resp.status_code}"
+            return result
     except Exception as e:
         return {"ok": False, "error": str(e), "latency_ms": (time.time() - start) * 1000}
 
