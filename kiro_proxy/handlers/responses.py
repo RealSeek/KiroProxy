@@ -56,6 +56,10 @@ def _convert_responses_input_to_kiro(input_data, instructions: str = None):
     
     for i, item in enumerate(input_data):
         item_type = item.get("type", "")
+        # Fallback: if type is missing but role exists, treat as message (standard OpenAI format)
+        if not item_type and "role" in item:
+            item_type = "message"
+            
         is_last = (i == len(input_data) - 1)
         
         if item_type == "message":
@@ -65,23 +69,28 @@ def _convert_responses_input_to_kiro(input_data, instructions: str = None):
             # 提取文本和图片
             text_parts = []
             images = []
-            for c in content_list:
-                if isinstance(c, str):
-                    text_parts.append(c)
-                elif isinstance(c, dict):
-                    c_type = c.get("type", "")
-                    if c_type in ("input_text", "output_text", "text"):
-                        text_parts.append(c.get("text", ""))
-                    elif c_type == "input_image":
-                        image_url = c.get("image_url", "")
-                        if image_url.startswith("data:"):
-                            import re
-                            match = re.match(r'data:image/(\w+);base64,(.+)', image_url)
-                            if match:
-                                images.append({
-                                    "format": match.group(1),
-                                    "source": {"bytes": match.group(2)}
-                                })
+            
+            # Handle simple string content
+            if isinstance(content_list, str):
+                text_parts.append(content_list)
+            elif isinstance(content_list, list):
+                for c in content_list:
+                    if isinstance(c, str):
+                        text_parts.append(c)
+                    elif isinstance(c, dict):
+                        c_type = c.get("type", "")
+                        if c_type in ("input_text", "output_text", "text"):
+                            text_parts.append(c.get("text", ""))
+                        elif c_type == "input_image":
+                            image_url = c.get("image_url", "")
+                            if image_url.startswith("data:"):
+                                import re
+                                match = re.match(r'data:image/(\w+);base64,(.+)', image_url)
+                                if match:
+                                    images.append({
+                                        "format": match.group(1),
+                                        "source": {"bytes": match.group(2)}
+                                    })
             
             text = "\n".join(text_parts) if text_parts else ""
             
