@@ -850,9 +850,9 @@ async def add_manual_token(request: Request):
     name = body.get("name", "手动添加账号")
     auth_method = body.get("auth_method", "social").lower()
 
-    # 放宽验证：只要有 access_token 或 refresh_token 其一即可
-    if not access_token and not refresh_token:
-        raise HTTPException(400, "需要 access_token 或 refresh_token")
+    # refresh_token 必填，access_token 可选（可通过 refresh_token 刷新获取）
+    if not refresh_token:
+        raise HTTPException(400, "缺少 refresh_token")
 
     # IDC 认证需要额外参数
     client_id = body.get("client_id", "").strip() if auth_method == "idc" else None
