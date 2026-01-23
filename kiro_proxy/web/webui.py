@@ -953,6 +953,7 @@ async function checkStatus(){
 }
 checkStatus();
 setInterval(checkStatus,30000);
+setInterval(()=>{if($('.tab.active')?.dataset.tab==='monitor')loadQuota();},5000);
 
 function copyRestartCmd(){
   const port=$('#newPort').value;
