@@ -1097,11 +1097,11 @@ async function loadLogs(){
     $('#logTable').innerHTML=(d.logs||[]).map(l=>`
       <tr>
         <td>${new Date(l.timestamp*1000).toLocaleTimeString()}</td>
-        <td>${l.path}</td>
+        <td>${l.path||'-'}</td>
         <td>${l.model||'-'}</td>
         <td>${l.account_id||'-'}</td>
-        <td><span class="badge ${l.status<400?'success':l.status<500?'warn':'error'}">${l.status}</span></td>
-        <td>${l.duration_ms.toFixed(0)}ms</td>
+        <td><span class="badge ${l.status<400?'success':l.status<500?'warn':'error'}">${l.status||'-'}</span></td>
+        <td>${l.duration_ms?l.duration_ms.toFixed(0)+'ms':'-'}</td>
       </tr>
     `).join('');
   }catch(e){console.error(e)}

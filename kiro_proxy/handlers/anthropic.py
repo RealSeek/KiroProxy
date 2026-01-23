@@ -230,13 +230,30 @@ async def handle_messages(request: Request):
 
 async def _handle_stream(kiro_request, headers, account, model, log_id, start_time, session_id=None, flow_id=None, history=None, user_content="", kiro_tools=None, images=None, tool_results=None, history_manager=None):
     """Handle streaming responses with auto-retry on quota exceeded and network errors."""
-    
+
     async def generate():
         nonlocal kiro_request, history
         current_account = account
         retry_count = 0
         max_retries = 2
         full_content = ""
+        final_status_code = 200
+        final_error_msg = None
+
+        def record_log():
+            """记录请求日志"""
+            duration = (time.time() - start_time) * 1000
+            state.add_log(RequestLog(
+                id=log_id,
+                timestamp=time.time(),
+                method="POST",
+                path="/v1/messages",
+                model=model,
+                account_id=current_account.id if current_account else None,
+                status=final_status_code,
+                duration_ms=duration,
+                error=final_error_msg
+            ))
         
         while retry_count <= max_retries:
             try:
@@ -259,7 +276,10 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                             
                             if flow_id:
                                 flow_monitor.fail_flow(flow_id, "rate_limit_error", "All accounts rate limited", 429)
+                            final_status_code = 429
+                            final_error_msg = "All accounts rate limited"
                             yield f'event: error\ndata: {{"type":"error","error":{{"type":"rate_limit_error","message":"All accounts rate limited"}}}}\n\n'
+                            record_log()
                             return
 
                         # 处理可重试的服务端错误
@@ -272,7 +292,10 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                                 continue
                             if flow_id:
                                 flow_monitor.fail_flow(flow_id, "api_error", "Server error after retries", response.status_code)
+                            final_status_code = response.status_code
+                            final_error_msg = "Server error after retries"
                             yield f'event: error\ndata: {{"type":"error","error":{{"type":"api_error","message":"Server error after retries"}}}}\n\n'
+                            record_log()
                             return
 
                         if response.status_code != 200:
@@ -316,7 +339,10 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                             
                             if flow_id:
                                 flow_monitor.fail_flow(flow_id, error_type, error_msg, response.status_code, error_str)
+                            final_status_code = http_status
+                            final_error_msg = error_msg
                             yield f'event: error\ndata: {{"type":"error","error":{{"type":"{error_type}","message":"{error_msg}"}}}}\n\n'
+                            record_log()
                             return
 
                         # 标记开始流式传输
@@ -405,6 +431,7 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                         current_account.request_count += 1
                         current_account.last_used = time.time()
                         get_rate_limiter().record_request(current_account.id)
+                        record_log()
                         return
 
             except httpx.TimeoutException:
@@ -414,9 +441,12 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                     import asyncio
                     await asyncio.sleep(0.5 * (2 ** retry_count))
                     continue
+                final_status_code = 408
+                final_error_msg = "Request timeout after retries"
                 if flow_id:
                     flow_monitor.fail_flow(flow_id, "timeout_error", "Request timeout after retries", 408)
                 yield f'event: error\ndata: {{"type":"error","error":{{"type":"api_error","message":"Request timeout after retries"}}}}\n\n'
+                record_log()
                 return
             except httpx.ConnectError:
                 if retry_count < max_retries:
@@ -425,9 +455,12 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                     import asyncio
                     await asyncio.sleep(0.5 * (2 ** retry_count))
                     continue
+                final_status_code = 502
+                final_error_msg = "Connection error after retries"
                 if flow_id:
                     flow_monitor.fail_flow(flow_id, "connection_error", "Connection error after retries", 502)
                 yield f'event: error\ndata: {{"type":"error","error":{{"type":"api_error","message":"Connection error after retries"}}}}\n\n'
+                record_log()
                 return
             except Exception as e:
                 # 检查是否为可重试的网络错误
@@ -437,9 +470,12 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                     import asyncio
                     await asyncio.sleep(0.5 * (2 ** retry_count))
                     continue
+                final_status_code = 500
+                final_error_msg = str(e)
                 if flow_id:
                     flow_monitor.fail_flow(flow_id, "api_error", str(e), 500)
                 yield f'event: error\ndata: {{"type":"error","error":{{"type":"api_error","message":"{str(e)}"}}}}\n\n'
+                record_log()
                 return
 
     return StreamingResponse(generate(), media_type="text/event-stream")
