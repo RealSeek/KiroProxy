@@ -16,7 +16,8 @@ from typing import Optional, Tuple
 class ErrorType(str, Enum):
     """错误类型"""
     ACCOUNT_SUSPENDED = "account_suspended"      # 账号被封禁
-    RATE_LIMITED = "rate_limited"                # 配额超限
+    QUOTA_EXHAUSTED = "quota_exhausted"          # 额度耗尽 (402)
+    RATE_LIMITED = "rate_limited"                # 配额超限 (429)
     CONTENT_TOO_LONG = "content_too_long"        # 内容过长
     AUTH_FAILED = "auth_failed"                  # 认证失败
     SERVICE_UNAVAILABLE = "service_unavailable"  # 服务不可用
@@ -64,7 +65,18 @@ def classify_error(status_code: int, error_text: str) -> KiroError:
             should_switch_account=True,
         )
     
-    # 2. 配额超限检测
+    # 2. 额度耗尽检测 (402 Payment Required)
+    if status_code == 402:
+        return KiroError(
+            type=ErrorType.QUOTA_EXHAUSTED,
+            status_code=status_code,
+            message=error_text,
+            user_message="账号额度已用完，已自动切换到其他账号",
+            should_disable_account=True,
+            should_switch_account=True,
+        )
+
+    # 3. 配额超限检测 (429 Rate Limited)
     quota_keywords = ["rate limit", "quota", "too many requests", "throttl", "capacity"]
     if status_code == 429 or any(kw in error_lower for kw in quota_keywords):
         return KiroError(
@@ -76,7 +88,7 @@ def classify_error(status_code: int, error_text: str) -> KiroError:
             cooldown_seconds=300,
         )
     
-    # 3. 内容过长检测
+    # 4. 内容过长检测
     if "content_length_exceeds_threshold" in error_lower or (
         "too long" in error_lower and ("input" in error_lower or "content" in error_lower)
     ):
@@ -87,8 +99,8 @@ def classify_error(status_code: int, error_text: str) -> KiroError:
             user_message="对话历史过长，请使用 /clear 清空对话",
             should_retry=True,
         )
-    
-    # 4. 认证失败检测
+
+    # 5. 认证失败检测
     if status_code == 401 or "unauthorized" in error_lower or "invalid token" in error_lower:
         return KiroError(
             type=ErrorType.AUTH_FAILED,
@@ -97,8 +109,8 @@ def classify_error(status_code: int, error_text: str) -> KiroError:
             user_message="Token 已过期或无效，请刷新 Token",
             should_switch_account=True,
         )
-    
-    # 5. 模型不可用检测
+
+    # 6. 模型不可用检测
     if "model_temporarily_unavailable" in error_lower or "unexpectedly high load" in error_lower:
         return KiroError(
             type=ErrorType.MODEL_UNAVAILABLE,
@@ -107,8 +119,8 @@ def classify_error(status_code: int, error_text: str) -> KiroError:
             user_message="模型暂时不可用，请稍后重试",
             should_retry=True,
         )
-    
-    # 6. 服务不可用检测
+
+    # 7. 服务不可用检测
     if status_code in (502, 503, 504) or "service unavailable" in error_lower:
         return KiroError(
             type=ErrorType.SERVICE_UNAVAILABLE,
@@ -117,8 +129,8 @@ def classify_error(status_code: int, error_text: str) -> KiroError:
             user_message="服务暂时不可用，请稍后重试",
             should_retry=True,
         )
-    
-    # 7. 未知错误
+
+    # 8. 未知错误
     return KiroError(
         type=ErrorType.UNKNOWN,
         status_code=status_code,
@@ -137,6 +149,7 @@ def get_anthropic_error_response(error: KiroError) -> dict:
     """生成 Anthropic 格式的错误响应"""
     error_type_map = {
         ErrorType.ACCOUNT_SUSPENDED: "authentication_error",
+        ErrorType.QUOTA_EXHAUSTED: "rate_limit_error",
         ErrorType.RATE_LIMITED: "rate_limit_error",
         ErrorType.CONTENT_TOO_LONG: "invalid_request_error",
         ErrorType.AUTH_FAILED: "authentication_error",

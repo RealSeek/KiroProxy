@@ -68,15 +68,16 @@ def _handle_kiro_error(status_code: int, error_text: str, account):
         account.enabled = False
         from ..credential import CredentialStatus
         account.status = CredentialStatus.SUSPENDED
-        print(f"[Account] 账号 {account.id} 已被禁用 (封禁)")
-    
+        print(f"[Account] 账号 {account.id} 已被禁用 ({error.type.value})")
+
     # 配额超限 - 标记冷却
     elif error.type == ErrorType.RATE_LIMITED and account:
         account.mark_quota_exceeded(error.message[:100])
-    
+
     # 映射错误类型
     error_type_map = {
         ErrorType.ACCOUNT_SUSPENDED: (403, "authentication_error"),
+        ErrorType.QUOTA_EXHAUSTED: (402, "rate_limit_error"),
         ErrorType.RATE_LIMITED: (429, "rate_limit_error"),
         ErrorType.CONTENT_TOO_LONG: (400, "invalid_request_error"),
         ErrorType.AUTH_FAILED: (401, "authentication_error"),

@@ -167,7 +167,7 @@ async def handle_chat_completions(request: Request):
                         current_account.enabled = False
                         from ..credential import CredentialStatus
                         current_account.status = CredentialStatus.SUSPENDED
-                        print(f"[OpenAI] 账号 {current_account.id} 已被禁用 (封禁)")
+                        print(f"[OpenAI] 账号 {current_account.id} 已被禁用 ({error.type.value})")
                     
                     # 配额超限 - 标记冷却
                     if error.type == ErrorType.RATE_LIMITED:
