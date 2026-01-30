@@ -630,7 +630,19 @@ HTML_SETTINGS = '''
       <input type="checkbox" id="addWarningHeader" onchange="updateHistoryConfig()">
       <span>截断时添加警告信息</span>
     </label>
-    
+
+    <div style="margin-top:1rem;border-top:1px solid var(--border);padding-top:1rem">
+      <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-bottom:0.75rem">
+        <input type="checkbox" id="promptInjectionEnabled" onchange="togglePromptInjection();updateHistoryConfig()">
+        <span>启用提示词注入</span>
+      </label>
+      <div id="promptInjectionOptions" style="display:none;margin-left:1.5rem">
+        <label style="display:block;font-size:0.875rem;color:var(--muted);margin-bottom:0.25rem">注入内容（将添加到 System Prompt 开头）</label>
+        <textarea id="promptInjectionContent" rows="4" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text);font-family:monospace;font-size:0.8rem;resize:vertical" onchange="updateHistoryConfig()" placeholder="输入要注入的提示词内容..."></textarea>
+        <p style="font-size:0.75rem;color:var(--muted);margin-top:0.25rem">提示：可用于添加输出长度限制等全局指令，避免响应截断</p>
+      </div>
+    </div>
+
     <div style="margin-top:1rem;padding:1rem;background:var(--bg);border-radius:6px">
       <p style="font-size:0.875rem;color:var(--muted)">
         <strong>策略说明：</strong><br>
@@ -1761,9 +1773,17 @@ async function loadHistoryConfig(){
     $('#summaryCacheDeltaChars').value=d.summary_cache_min_delta_chars||4000;
     $('#summaryCacheMaxAge').value=d.summary_cache_max_age_seconds||180;
     $('#addWarningHeader').checked=d.add_warning_header!==false;
+    // 提示词注入
+    $('#promptInjectionEnabled').checked=d.prompt_injection_enabled||false;
+    $('#promptInjectionContent').value=d.prompt_injection_content||'';
+    togglePromptInjection();
     // 显示/隐藏摘要选项
     $('#summaryOptions').style.display=$('#strategySmartSummary').checked?'block':'none';
   }catch(e){console.error('加载配置失败:',e)}
+}
+
+function togglePromptInjection(){
+  $('#promptInjectionOptions').style.display=$('#promptInjectionEnabled').checked?'block':'none';
 }
 
 async function updateHistoryConfig(){
@@ -1787,7 +1807,9 @@ async function updateHistoryConfig(){
     summary_cache_min_delta_messages:parseInt($('#summaryCacheDeltaMessages').value)||3,
     summary_cache_min_delta_chars:parseInt($('#summaryCacheDeltaChars').value)||4000,
     summary_cache_max_age_seconds:parseInt($('#summaryCacheMaxAge').value)||180,
-    add_warning_header:$('#addWarningHeader').checked
+    add_warning_header:$('#addWarningHeader').checked,
+    prompt_injection_enabled:$('#promptInjectionEnabled').checked,
+    prompt_injection_content:$('#promptInjectionContent').value
   };
   try{
     await fetch('/api/settings/history',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});

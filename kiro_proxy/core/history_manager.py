@@ -115,7 +115,13 @@ class HistoryConfig:
 
     # 是否添加截断警告
     add_warning_header: bool = True
-    
+
+    # 提示词注入配置（用于限制输出长度）
+    prompt_injection_enabled: bool = False
+    prompt_injection_content: str = """<WARNING>
+Please be aware that your single response content (Output) must not exceed 8192 tokens. Exceeding this limit will result in truncation and may cause tool call failures or other critical errors.
+</WARNING>"""
+
     def to_dict(self) -> dict:
         return {
             "strategies": [s.value for s in self.strategies],
@@ -133,6 +139,8 @@ class HistoryConfig:
             "summary_cache_min_delta_chars": self.summary_cache_min_delta_chars,
             "summary_cache_max_age_seconds": self.summary_cache_max_age_seconds,
             "add_warning_header": self.add_warning_header,
+            "prompt_injection_enabled": self.prompt_injection_enabled,
+            "prompt_injection_content": self.prompt_injection_content,
         }
     
     @classmethod
@@ -154,6 +162,10 @@ class HistoryConfig:
             summary_cache_min_delta_chars=data.get("summary_cache_min_delta_chars", 4000),
             summary_cache_max_age_seconds=data.get("summary_cache_max_age_seconds", 180),
             add_warning_header=data.get("add_warning_header", True),
+            prompt_injection_enabled=data.get("prompt_injection_enabled", False),
+            prompt_injection_content=data.get("prompt_injection_content", """<WARNING>
+Please be aware that your single response content (Output) must not exceed 8192 tokens. Exceeding this limit will result in truncation and may cause tool call failures or other critical errors.
+</WARNING>"""),
         )
 
 

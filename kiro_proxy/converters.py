@@ -8,6 +8,7 @@
 - tool_choice: required 支持
 - web_search 特殊工具支持
 - tool_results 去重
+- 提示词注入（限制输出长度）
 """
 import json
 import hashlib
@@ -17,6 +18,15 @@ from typing import List, Dict, Any, Tuple, Optional
 # 常量
 MAX_TOOLS = 50
 MAX_TOOL_DESCRIPTION_LENGTH = 500
+
+
+def get_prompt_injection() -> str:
+    """获取提示词注入内容（如果启用）"""
+    from .core import get_history_config
+    config = get_history_config()
+    if config.prompt_injection_enabled:
+        return config.prompt_injection_content + "\n\n"
+    return ""
 
 
 def generate_session_id(messages: list) -> str:
@@ -353,9 +363,14 @@ def convert_anthropic_messages_to_kiro(messages: List[dict], system="") -> Tuple
             continue
         
         if role == "user":
-            if system_text and not history:
-                content = f"{system_text}\n\n{content}" if content else system_text
-            
+            # 在第一条用户消息时注入提示词和 system prompt
+            if not history:
+                injection = get_prompt_injection()
+                if system_text:
+                    content = f"{injection}{system_text}\n\n{content}" if content else f"{injection}{system_text}"
+                elif injection:
+                    content = f"{injection}{content}" if content else injection.rstrip()
+
             if is_last:
                 user_content = content if content else "Continue"
             else:
@@ -563,9 +578,13 @@ def convert_openai_messages_to_kiro(
                     })
                 pending_tool_results = []
             
-            # 合并 system prompt
-            if system_content and not history:
-                content = f"{system_content}\n\n{content}"
+            # 合并 system prompt 和提示词注入
+            if not history:
+                injection = get_prompt_injection()
+                if system_content:
+                    content = f"{injection}{system_content}\n\n{content}"
+                elif injection:
+                    content = f"{injection}{content}" if content else injection.rstrip()
             
             if is_last:
                 user_content = content
@@ -854,9 +873,13 @@ def convert_gemini_contents_to_kiro(
             if tool_responses:
                 pending_tool_results.extend(tool_responses)
             
-            # 合并 system prompt
-            if system_text and not history:
-                text = f"{system_text}{tool_instruction}\n\n{text}"
+            # 合并 system prompt 和提示词注入
+            if not history:
+                injection = get_prompt_injection()
+                if system_text:
+                    text = f"{injection}{system_text}{tool_instruction}\n\n{text}"
+                elif injection:
+                    text = f"{injection}{text}" if text else injection.rstrip()
             
             if is_last:
                 user_content = text
