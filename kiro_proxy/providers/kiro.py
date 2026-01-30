@@ -114,60 +114,76 @@ class KiroProvider(BaseProvider):
             }
         }
     
+    # 上下文窗口大小（200k tokens）
+    CONTEXT_WINDOW_SIZE = 200_000
+
     def parse_response(self, raw: bytes) -> Dict[str, Any]:
         """解析 AWS event-stream 格式响应"""
         result = {
             "content": [],
             "tool_uses": [],
-            "stop_reason": "end_turn"
+            "stop_reason": "end_turn",
+            "context_usage_percentage": None,  # 从 contextUsageEvent 获取
+            "input_tokens": None,  # 从 contextUsageEvent 计算
         }
-        
+
         tool_input_buffer = {}
         pos = 0
-        
+
         while pos < len(raw):
             if pos + 12 > len(raw):
                 break
-            
+
             total_len = int.from_bytes(raw[pos:pos+4], 'big')
             headers_len = int.from_bytes(raw[pos+4:pos+8], 'big')
-            
+
             if total_len == 0 or total_len > len(raw) - pos:
                 break
-            
+
             header_start = pos + 12
             header_end = header_start + headers_len
             headers_data = raw[header_start:header_end]
             event_type = None
-            
+
             try:
                 headers_str = headers_data.decode('utf-8', errors='ignore')
                 if 'toolUseEvent' in headers_str:
                     event_type = 'toolUseEvent'
                 elif 'assistantResponseEvent' in headers_str:
                     event_type = 'assistantResponseEvent'
+                elif 'contextUsageEvent' in headers_str:
+                    event_type = 'contextUsageEvent'
             except:
                 pass
-            
+
             payload_start = pos + 12 + headers_len
             payload_end = pos + total_len - 4
-            
+
             if payload_start < payload_end:
                 try:
                     payload = json.loads(raw[payload_start:payload_end].decode('utf-8'))
-                    
+
                     if 'assistantResponseEvent' in payload:
                         e = payload['assistantResponseEvent']
                         if 'content' in e:
                             result["content"].append(e['content'])
                     elif 'content' in payload and event_type != 'toolUseEvent':
                         result["content"].append(payload['content'])
-                    
+
+                    # 解析 contextUsageEvent
+                    if event_type == 'contextUsageEvent' or 'contextUsageEvent' in payload:
+                        ctx_event = payload.get('contextUsageEvent', payload)
+                        if 'contextUsagePercentage' in ctx_event:
+                            percentage = ctx_event['contextUsagePercentage']
+                            result["context_usage_percentage"] = percentage
+                            # 计算实际 input_tokens: percentage * 200000 / 100
+                            result["input_tokens"] = int(percentage * self.CONTEXT_WINDOW_SIZE / 100)
+
                     if event_type == 'toolUseEvent' or 'toolUseId' in payload:
                         tool_id = payload.get('toolUseId', '')
                         tool_name = payload.get('name', '')
                         tool_input = payload.get('input', '')
-                        
+
                         if tool_id:
                             if tool_id not in tool_input_buffer:
                                 tool_input_buffer[tool_id] = {
@@ -181,9 +197,9 @@ class KiroProvider(BaseProvider):
                                 tool_input_buffer[tool_id]["input_parts"].append(tool_input)
                 except:
                     pass
-            
+
             pos += total_len
-        
+
         # 组装工具调用
         for tool_id, tool_data in tool_input_buffer.items():
             input_str = "".join(tool_data["input_parts"])
@@ -191,17 +207,17 @@ class KiroProvider(BaseProvider):
                 input_json = json.loads(input_str)
             except:
                 input_json = {"raw": input_str}
-            
+
             result["tool_uses"].append({
                 "type": "tool_use",
                 "id": tool_data["id"],
                 "name": tool_data["name"],
                 "input": input_json
             })
-        
+
         if result["tool_uses"]:
             result["stop_reason"] = "tool_use"
-        
+
         return result
     
     def parse_response_text(self, raw: bytes) -> str:

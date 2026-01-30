@@ -67,12 +67,12 @@ async def client_key_auth_middleware(request: Request, call_next):
 
     渐进式安全：
     - 无 Key 时开放（向后兼容）
-    - 有 Key 时强制验证 /v1/* 路由
+    - 有 Key 时强制验证 /v1/* 和 /cc/v1/* 路由
     """
     path = request.url.path
 
-    # 仅拦截 /v1/* API 路由
-    if path.startswith("/v1/"):
+    # 拦截 /v1/* 和 /cc/v1/* API 路由
+    if path.startswith("/v1/") or path.startswith("/cc/v1/"):
         # 渐进式安全：检查是否有启用的 Key
         if client_key_manager.has_enabled_keys():
             api_key = extract_api_key(request)
@@ -244,6 +244,22 @@ async def anthropic_messages(request: Request):
 
 @app.post("/v1/messages/count_tokens")
 async def anthropic_count_tokens(request: Request):
+    return await anthropic.handle_count_tokens(request)
+
+
+# Claude Code 兼容端点 - 返回准确的 token 消耗
+@app.post("/cc/v1/messages")
+async def anthropic_messages_cc(request: Request):
+    """Claude Code 兼容端点
+
+    与 /v1/messages 的区别：
+    - 流式响应会等待 contextUsageEvent 后再发送 message_start
+    - message_start 中的 input_tokens 是从 contextUsageEvent 计算的准确值
+    """
+    return await anthropic.handle_messages_cc(request)
+
+@app.post("/cc/v1/messages/count_tokens")
+async def anthropic_count_tokens_cc(request: Request):
     return await anthropic.handle_count_tokens(request)
 
 
