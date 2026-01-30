@@ -735,14 +735,11 @@ async def handle_messages_cc(request: Request):
     user_content, history, tool_results = convert_anthropic_messages_to_kiro(messages, system)
 
     # 历史消息预处理
-    history_manager = HistoryManager(get_history_config(), cache_key=session_id)
-
-    async def api_caller(prompt: str) -> str:
-        return await _call_kiro_for_summary(prompt, account, headers)
-    if history_manager.should_summarize(history) or history_manager.should_pre_summary_for_error_retry(history, user_content):
-        history = await history_manager.pre_process_async(history, user_content, api_caller)
-    else:
-        history = history_manager.pre_process(history, user_content)
+    # Claude Code 客户端拥有自己的上下文管理能力（基于准确的 input_tokens）
+    # 因此 /cc/v1 端点禁用后端自动截断/重试，让长度超限错误直接透传给客户端
+    from ..core.history_manager import HistoryConfig
+    cc_history_config = HistoryConfig(strategies=[])  # 禁用所有截断策略
+    history_manager = HistoryManager(cc_history_config, cache_key=session_id)
 
     from ..converters import fix_history_alternation
     history = fix_history_alternation(history)
