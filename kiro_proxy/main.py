@@ -114,6 +114,7 @@ async def admin_auth_middleware(request: Request, call_next):
     # 白名单路由（无需认证）
     whitelist_prefixes = [
         "/v1/",                    # API 路由（已有 Client Key）
+        "/cc/v1/",                 # Claude Code 兼容 API 路由（已有 Client Key）
         "/assets/",                # 静态资源
         "/remote-login/",          # 远程登录页面
         "/api/remote-login/",      # 远程登录 API
