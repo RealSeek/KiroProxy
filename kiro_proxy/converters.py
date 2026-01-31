@@ -125,7 +125,6 @@ def convert_anthropic_tools_to_kiro(tools: List[dict]) -> List[dict]:
         "computer_20250124", "computer_20241022",
         "text_editor_20250124", "text_editor_20241022",
         "bash_20250124", "bash_20241022",
-        "mcp_20250326",
     }
 
     for tool in tools:
