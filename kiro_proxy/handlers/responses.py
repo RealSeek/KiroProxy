@@ -273,14 +273,12 @@ def _convert_tools_to_kiro(tools: list) -> list:
     """
     if not tools:
         return None
-    
-    MAX_TOOLS = 50  # Kiro API 工具数量限制
+
     kiro_tools = []
-    function_count = 0
-    
+
     for tool in tools:
         tool_type = tool.get("type", "")
-        
+
         # 特殊工具类型
         if tool_type == "web_search":
             # Kiro 支持 web_search
@@ -293,11 +291,7 @@ def _convert_tools_to_kiro(tools: list) -> list:
         elif tool_type == "local_shell":
             # local_shell 是 OpenAI 原生工具，Kiro 不支持，跳过
             continue
-        
-        # 限制工具数量
-        if function_count >= MAX_TOOLS:
-            continue
-        
+
         # Responses API 格式：字段直接在工具对象上
         # Chat Completions API 格式：字段嵌套在 function 里
         if tool_type == "function":
@@ -305,17 +299,17 @@ def _convert_tools_to_kiro(tools: list) -> list:
             if "function" in tool:
                 func = tool["function"]
                 name = func.get("name", "")
-                description = func.get("description", "")[:500]
+                description = func.get("description", "")[:10000]
                 parameters = func.get("parameters", {"type": "object", "properties": {}})
             else:
                 # Responses API 格式
                 name = tool.get("name", "")
-                description = tool.get("description", "")[:500]
+                description = tool.get("description", "")[:10000]
                 parameters = tool.get("parameters", {"type": "object", "properties": {}})
         elif tool_type == "custom":
             # 自定义工具格式
             name = tool.get("name", "")
-            description = tool.get("description", "")[:500]
+            description = tool.get("description", "")[:10000]
             # custom 工具可能有不同的 schema 格式
             fmt = tool.get("format", {})
             if fmt.get("type") == "json_schema":
@@ -324,14 +318,12 @@ def _convert_tools_to_kiro(tools: list) -> list:
                 parameters = {"type": "object", "properties": {}}
         else:
             name = tool.get("name", "")
-            description = tool.get("description", "")[:500]
+            description = tool.get("description", "")[:10000]
             parameters = tool.get("parameters", tool.get("input_schema", {"type": "object", "properties": {}}))
-        
+
         if not name:
             continue
-        
-        function_count += 1
-        
+
         # 转换为 Kiro 格式
         kiro_tools.append({
             "toolSpecification": {

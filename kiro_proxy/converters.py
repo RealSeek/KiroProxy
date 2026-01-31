@@ -16,7 +16,6 @@ import re
 from typing import List, Dict, Any, Tuple, Optional
 
 # 常量
-MAX_TOOLS = 50
 MAX_TOOL_DESCRIPTION_LENGTH = 500
 
 
@@ -109,8 +108,7 @@ def truncate_description(desc: str, max_length: int = MAX_TOOL_DESCRIPTION_LENGT
 def convert_anthropic_tools_to_kiro(tools: List[dict]) -> List[dict]:
     """将 Anthropic 工具格式转换为 Kiro 格式
 
-    与 kiro.rs 保持一致：直接转换所有工具，不做过滤。
-    - 限制最多 50 个工具
+    与 kiro.rs 保持一致：直接转换所有工具，不做过滤和数量限制。
     - 截断过长的描述（最多 10000 字符，与 kiro.rs 一致）
     """
     if not tools:
@@ -118,7 +116,7 @@ def convert_anthropic_tools_to_kiro(tools: List[dict]) -> List[dict]:
 
     kiro_tools = []
 
-    for tool in tools[:MAX_TOOLS]:  # 限制工具数量
+    for tool in tools:  # 不限制工具数量
         name = tool.get("name", "")
         description = tool.get("description", "")
         input_schema = tool.get("input_schema", {"type": "object", "properties": {}})
@@ -433,11 +431,10 @@ def is_tool_choice_required(tool_choice) -> bool:
 def convert_openai_tools_to_kiro(tools: List[dict]) -> List[dict]:
     """将 OpenAI 工具格式转换为 Kiro 格式"""
     kiro_tools = []
-    function_count = 0
-    
+
     for tool in tools:
         tool_type = tool.get("type", "function")
-        
+
         # 特殊工具
         if tool_type == "web_search":
             kiro_tools.append({
@@ -446,21 +443,18 @@ def convert_openai_tools_to_kiro(tools: List[dict]) -> List[dict]:
                 }
             })
             continue
-        
+
         if tool_type != "function":
             continue
-        
-        # 限制工具数量
-        if function_count >= MAX_TOOLS:
-            continue
-        function_count += 1
-        
+
         func = tool.get("function", {})
         name = func.get("name", "")
         description = func.get("description", f"Tool: {name}")
-        description = truncate_description(description)
+        # 截断描述（最多 10000 字符）
+        if len(description) > 10000:
+            description = description[:10000]
         parameters = func.get("parameters", {"type": "object", "properties": {}})
-        
+
         kiro_tools.append({
             "toolSpecification": {
                 "name": name,
@@ -470,7 +464,7 @@ def convert_openai_tools_to_kiro(tools: List[dict]) -> List[dict]:
                 }
             }
         })
-    
+
     return kiro_tools
 
 
@@ -705,7 +699,7 @@ def convert_kiro_response_to_openai(result: dict, model: str, msg_id: str) -> di
 
 def convert_gemini_tools_to_kiro(tools: List[dict]) -> List[dict]:
     """将 Gemini 工具格式转换为 Kiro 格式
-    
+
     Gemini 工具格式：
     {
         "functionDeclarations": [
@@ -718,23 +712,19 @@ def convert_gemini_tools_to_kiro(tools: List[dict]) -> List[dict]:
     }
     """
     kiro_tools = []
-    function_count = 0
-    
+
     for tool in tools:
         # Gemini 的工具定义在 functionDeclarations 中
         declarations = tool.get("functionDeclarations", [])
-        
+
         for func in declarations:
-            # 限制工具数量
-            if function_count >= MAX_TOOLS:
-                break
-            function_count += 1
-            
             name = func.get("name", "")
             description = func.get("description", f"Tool: {name}")
-            description = truncate_description(description)
+            # 截断描述（最多 10000 字符）
+            if len(description) > 10000:
+                description = description[:10000]
             parameters = func.get("parameters", {"type": "object", "properties": {}})
-            
+
             kiro_tools.append({
                 "toolSpecification": {
                     "name": name,
@@ -744,7 +734,7 @@ def convert_gemini_tools_to_kiro(tools: List[dict]) -> List[dict]:
                     }
                 }
             })
-    
+
     return kiro_tools
 
 
