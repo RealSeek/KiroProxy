@@ -756,6 +756,13 @@ async def handle_messages_cc(request: Request):
 
     # 构建 Kiro 请求
     kiro_tools = convert_anthropic_tools_to_kiro(tools) if tools else None
+
+    # 调试：打印工具信息
+    if tools:
+        print(f"[CC/Anthropic] 收到 {len(tools)} 个工具，转换后 {len(kiro_tools) if kiro_tools else 0} 个")
+        for i, t in enumerate(tools[:5]):  # 只打印前5个
+            print(f"[CC/Anthropic]   工具 {i+1}: type={t.get('type', '')}, name={t.get('name', '')}")
+
     kiro_request = build_kiro_request(user_content, model, history, kiro_tools, images, tool_results)
 
     if stream:
