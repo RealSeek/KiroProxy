@@ -869,21 +869,39 @@ async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start
                                     continue
 
                             if error_obj.type == ErrorType.CONTENT_TOO_LONG:
+                                # /cc 端点：返回 stop_reason="max_tokens" 让 Claude Code 触发自动压缩
+                                # 而不是返回错误，这样客户端可以识别上下文已满并自动处理
                                 history_chars, user_chars, total_chars = history_manager.estimate_request_chars(
                                     history, user_content
                                 )
                                 print(f"[CC/Stream] 内容长度超限: history={history_chars} chars, user={user_chars} chars, total={total_chars} chars")
-                                async def api_caller(prompt: str) -> str:
-                                    return await _call_kiro_for_summary(prompt, current_account, headers)
-                                truncated_history, should_retry = await history_manager.handle_length_error_async(
-                                    history, retry_count, api_caller
-                                )
-                                if should_retry:
-                                    print(f"[CC/Stream] 内容长度超限，{history_manager.truncate_info}")
-                                    history = truncated_history
-                                    kiro_request = build_kiro_request(user_content, model, history, kiro_tools, images, tool_results)
-                                    retry_count += 1
-                                    continue
+                                print(f"[CC/Stream] 返回 stop_reason=max_tokens 以触发 Claude Code 自动压缩")
+
+                                # 估算 input_tokens（基于字符数，约 4 字符/token）
+                                estimated_input_tokens = total_chars // 4
+                                # 确保接近上下文窗口限制，触发压缩
+                                estimated_input_tokens = max(estimated_input_tokens, CONTEXT_WINDOW_SIZE - 1000)
+
+                                msg_id = f"msg_{log_id}"
+
+                                # 发送完整的流结束序列，stop_reason="max_tokens"
+                                yield f'event: message_start\ndata: {{"type":"message_start","message":{{"id":"{msg_id}","type":"message","role":"assistant","content":[],"model":"{model}","stop_reason":null,"stop_sequence":null,"usage":{{"input_tokens":{estimated_input_tokens},"output_tokens":1}}}}}}\n\n'
+                                yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":0,"content_block":{{"type":"text","text":""}}}}\n\n'
+                                yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":0}}\n\n'
+                                yield f'event: message_delta\ndata: {{"type":"message_delta","delta":{{"stop_reason":"max_tokens","stop_sequence":null}},"usage":{{"input_tokens":{estimated_input_tokens},"output_tokens":1}}}}\n\n'
+                                yield f'event: message_stop\ndata: {{"type":"message_stop"}}\n\n'
+
+                                if flow_id:
+                                    flow_monitor.complete_flow(
+                                        flow_id,
+                                        status_code=200,
+                                        content="",
+                                        tool_calls=[],
+                                        stop_reason="max_tokens",
+                                        usage=TokenUsage(input_tokens=estimated_input_tokens, output_tokens=1),
+                                    )
+                                record_log()
+                                return
 
                             if flow_id:
                                 flow_monitor.fail_flow(flow_id, error_type, error_msg, response.status_code, error_str)
@@ -1072,22 +1090,41 @@ async def _handle_non_stream_cc(kiro_request, headers, account, model, log_id, s
                             continue
 
                     if error_obj.type == ErrorType.CONTENT_TOO_LONG and history_manager:
+                        # /cc 端点：返回 stop_reason="max_tokens" 让 Claude Code 触发自动压缩
                         history_chars, user_chars, total_chars = history_manager.estimate_request_chars(
                             history, user_content
                         )
                         print(f"[CC/NonStream] 内容长度超限: history={history_chars} chars, user={user_chars} chars, total={total_chars} chars")
-                        async def api_caller(prompt: str) -> str:
-                            return await _call_kiro_for_summary(prompt, current_account, headers)
-                        truncated_history, should_retry = await history_manager.handle_length_error_async(
-                            history, retry, api_caller
-                        )
-                        if should_retry:
-                            print(f"[CC/NonStream] 内容长度超限，{history_manager.truncate_info}")
-                            history = truncated_history
-                            kiro_request = build_kiro_request(user_content, model, history, kiro_tools, images, tool_results)
-                            continue
-                        else:
-                            print(f"[CC/NonStream] 内容长度超限但未重试: retry={retry}/{max_retries}")
+                        print(f"[CC/NonStream] 返回 stop_reason=max_tokens 以触发 Claude Code 自动压缩")
+
+                        # 估算 input_tokens
+                        estimated_input_tokens = total_chars // 4
+                        estimated_input_tokens = max(estimated_input_tokens, CONTEXT_WINDOW_SIZE - 1000)
+
+                        if flow_id:
+                            flow_monitor.complete_flow(
+                                flow_id,
+                                status_code=200,
+                                content="",
+                                tool_calls=[],
+                                stop_reason="max_tokens",
+                                usage=TokenUsage(input_tokens=estimated_input_tokens, output_tokens=1),
+                            )
+
+                        # 返回带有 stop_reason="max_tokens" 的正常响应
+                        return {
+                            "id": f"msg_{log_id}",
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [],
+                            "model": model,
+                            "stop_reason": "max_tokens",
+                            "stop_sequence": None,
+                            "usage": {
+                                "input_tokens": estimated_input_tokens,
+                                "output_tokens": 1
+                            }
+                        }
 
                     if flow_id:
                         flow_monitor.fail_flow(flow_id, error_type, error_message, status, error_msg)
