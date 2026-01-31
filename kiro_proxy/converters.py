@@ -109,49 +109,23 @@ def truncate_description(desc: str, max_length: int = MAX_TOOL_DESCRIPTION_LENGT
 def convert_anthropic_tools_to_kiro(tools: List[dict]) -> List[dict]:
     """将 Anthropic 工具格式转换为 Kiro 格式
 
-    增强：
+    与 kiro.rs 保持一致：直接转换所有工具，不做过滤。
     - 限制最多 50 个工具
-    - 截断过长的描述
-    - 过滤不支持的内置工具类型（web_search 由专门的 WebSearch 处理器处理）
-
-    注意：web_search 工具不在这里转换，而是由 handlers/websearch.py 单独处理
+    - 截断过长的描述（最多 10000 字符，与 kiro.rs 一致）
     """
+    if not tools:
+        return []
+
     kiro_tools = []
-    function_count = 0
 
-    # Anthropic 内置工具类型（非函数工具）- 这些都不通过普通 Kiro API 处理
-    BUILTIN_TOOL_TYPES = {
-        "web_search_20250305", "web_search",
-        "computer_20250124", "computer_20241022",
-        "text_editor_20250124", "text_editor_20241022",
-        "bash_20250124", "bash_20241022",
-    }
-
-    for tool in tools:
-        tool_type = tool.get("type", "")
+    for tool in tools[:MAX_TOOLS]:  # 限制工具数量
         name = tool.get("name", "")
-
-        # 检查是否为内置工具（通过 type 字段）- 全部跳过
-        if tool_type in BUILTIN_TOOL_TYPES:
-            continue
-
-        # 检查是否为 web_search（通过 name 字段，兼容旧格式）- 跳过
-        if name in ("web_search", "web_search_20250305"):
-            continue
-
-        # 普通函数工具必须有 name
-        if not name:
-            continue
-
-        # 限制工具数量
-        if function_count >= MAX_TOOLS:
-            continue
-        function_count += 1
-
-        description = tool.get("description", f"Tool: {name}")
-        description = truncate_description(description)
-
+        description = tool.get("description", "")
         input_schema = tool.get("input_schema", {"type": "object", "properties": {}})
+
+        # 截断描述（与 kiro.rs 一致，最多 10000 字符）
+        if len(description) > 10000:
+            description = description[:10000]
 
         kiro_tools.append({
             "toolSpecification": {
