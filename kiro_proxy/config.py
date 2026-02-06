@@ -18,13 +18,13 @@ MODEL_MAPPING = {
     "claude-3-5-haiku-20241022": "claude-haiku-4.5",
     "claude-3-5-haiku-latest": "claude-haiku-4.5",
     # Claude 3
-    "claude-3-opus-20240229": "claude-opus-4.5",
-    "claude-3-opus-latest": "claude-opus-4.5",
+    "claude-3-opus-20240229": "claude-opus-4.6",
+    "claude-3-opus-latest": "claude-opus-4.6",
     "claude-3-sonnet-20240229": "claude-sonnet-4",
     "claude-3-haiku-20240307": "claude-haiku-4.5",
     # Claude 4
     "claude-4-sonnet": "claude-sonnet-4",
-    "claude-4-opus": "claude-opus-4.5",
+    "claude-4-opus": "claude-opus-4.6",
     # OpenAI GPT -> Claude
     "gpt-4o": "claude-sonnet-4",
     "gpt-4o-mini": "claude-haiku-4.5",
@@ -32,21 +32,21 @@ MODEL_MAPPING = {
     "gpt-4": "claude-sonnet-4",
     "gpt-3.5-turbo": "claude-haiku-4.5",
     # OpenAI o1 -> Claude Opus
-    "o1": "claude-opus-4.5",
-    "o1-preview": "claude-opus-4.5",
+    "o1": "claude-opus-4.6",
+    "o1-preview": "claude-opus-4.6",
     "o1-mini": "claude-sonnet-4",
     # Gemini -> Claude
     "gemini-2.0-flash": "claude-sonnet-4",
-    "gemini-2.0-flash-thinking": "claude-opus-4.5",
+    "gemini-2.0-flash-thinking": "claude-opus-4.6",
     "gemini-1.5-pro": "claude-sonnet-4.5",
     "gemini-1.5-flash": "claude-sonnet-4",
     # 别名
     "sonnet": "claude-sonnet-4",
     "haiku": "claude-haiku-4.5",
-    "opus": "claude-opus-4.5",
+    "opus": "claude-opus-4.6",
 }
 
-KIRO_MODELS = {"auto", "claude-sonnet-4.5", "claude-sonnet-4", "claude-haiku-4.5", "claude-opus-4.5"}
+KIRO_MODELS = {"auto", "claude-sonnet-4.5", "claude-sonnet-4", "claude-haiku-4.5", "claude-opus-4.5", "claude-opus-4.6"}
 
 def map_model_name(model: str) -> str:
     """将外部模型名称映射到 Kiro 支持的名称"""
@@ -58,7 +58,9 @@ def map_model_name(model: str) -> str:
         return model
     model_lower = model.lower()
     if "opus" in model_lower:
-        return "claude-opus-4.5"
+        if "4-5" in model_lower or "4.5" in model_lower:
+            return "claude-opus-4.5"
+        return "claude-opus-4.6"
     if "haiku" in model_lower:
         return "claude-haiku-4.5"
     if "sonnet" in model_lower:

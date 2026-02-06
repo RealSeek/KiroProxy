@@ -41,8 +41,8 @@ def build_kiro_headers(token: str) -> dict:
         "content-type": "application/json",
         "x-amzn-codewhisperer-optout": "true",
         "x-amzn-kiro-agent-mode": "vibe",
-        "x-amz-user-agent": f"aws-sdk-js/1.0.27 KiroIDE-0.8.0-{MACHINE_ID}",
-        "user-agent": f"aws-sdk-js/1.0.27 ua/2.1 os/linux lang/js md/nodejs api/codewhispererstreaming KiroIDE-0.8.0-{MACHINE_ID}",
+        "x-amz-user-agent": f"aws-sdk-js/1.0.27 KiroIDE-0.9.2-{MACHINE_ID}",
+        "user-agent": f"aws-sdk-js/1.0.27 ua/2.1 os/linux lang/js md/nodejs api/codewhispererstreaming KiroIDE-0.9.2-{MACHINE_ID}",
         "amz-sdk-invocation-id": str(uuid.uuid4()),
         "amz-sdk-request": "attempt=1; max=3",
         "Authorization": f"Bearer {token}",
@@ -189,8 +189,10 @@ async def list_models():
         "data": [
             {"id": "kiro-claude-sonnet-4", "object": "model", "owned_by": "kiro"},
             {"id": "kiro-claude-opus-4.5", "object": "model", "owned_by": "kiro"},
+            {"id": "kiro-claude-opus-4.6", "object": "model", "owned_by": "kiro"},
             {"id": "claude-sonnet-4", "object": "model", "owned_by": "kiro"},
             {"id": "claude-opus-4.5", "object": "model", "owned_by": "kiro"},
+            {"id": "claude-opus-4.6", "object": "model", "owned_by": "kiro"},
         ]
     }
 

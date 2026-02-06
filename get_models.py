@@ -18,7 +18,7 @@ def get_models():
     token = get_token()
     headers = {
         "content-type": "application/json",
-        "x-amz-user-agent": f"aws-sdk-js/1.0.27 KiroIDE-0.8.0-{MACHINE_ID}",
+        "x-amz-user-agent": f"aws-sdk-js/1.0.27 KiroIDE-0.9.2-{MACHINE_ID}",
         "amz-sdk-invocation-id": str(uuid.uuid4()),
         "Authorization": f"Bearer {token}",
     }
