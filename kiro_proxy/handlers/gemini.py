@@ -107,6 +107,35 @@ async def handle_generate_content(model_name: str, request: Request):
             print(f"[Summary] API 调用失败: {e}")
         return ""
     
+    # 验证当前请求的 tool_results 与 history 最后一条 assistant 的 toolUses 配对
+    if tool_results and history:
+        last_assistant = None
+        for msg in reversed(history):
+            if "assistantResponseMessage" in msg:
+                last_assistant = msg["assistantResponseMessage"]
+                break
+
+        if last_assistant:
+            tool_use_ids = set()
+            for tu in last_assistant.get("toolUses", []) or []:
+                tu_id = tu.get("toolUseId")
+                if tu_id:
+                    tool_use_ids.add(tu_id)
+
+            if tool_use_ids:
+                tool_results = [tr for tr in tool_results if tr.get("toolUseId") in tool_use_ids]
+                tool_result_ids = set(tr.get("toolUseId") for tr in tool_results if tr.get("toolUseId"))
+                if tool_result_ids and len(tool_result_ids) < len(tool_use_ids):
+                    paired = [tu for tu in last_assistant.get("toolUses", []) if tu.get("toolUseId") in tool_result_ids]
+                    if paired:
+                        last_assistant["toolUses"] = paired
+                    else:
+                        last_assistant.pop("toolUses", None)
+            else:
+                tool_results = []
+        else:
+            tool_results = []
+
     # 构建 Kiro 请求
     kiro_request = build_kiro_request(
         user_content, model, history,

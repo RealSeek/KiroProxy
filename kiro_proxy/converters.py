@@ -229,6 +229,24 @@ def fix_history_alternation(history: List[dict], model_id: str = "claude-sonnet-
                     # assistant 没有 toolUses 但 user 有 toolResults
                     # 这是不允许的，需要清除 user 的 toolResults
                     item["userInputMessage"].pop("userInputMessageContext", None)
+                elif has_tool_uses and has_tool_results:
+                    # 两者都有，需要精确按 ID 配对，移除孤立的 toolUse
+                    tool_result_ids = set()
+                    for tr in ctx.get("toolResults", []):
+                        tr_id = tr.get("toolUseId")
+                        if tr_id:
+                            tool_result_ids.add(tr_id)
+
+                    tool_uses = last_assistant.get("toolUses", [])
+                    paired_tool_uses = [tu for tu in tool_uses if tu.get("toolUseId") in tool_result_ids]
+
+                    if not paired_tool_uses:
+                        # 所有 toolUse 都是孤立的，全部清除
+                        last_assistant.pop("toolUses", None)
+                        item["userInputMessage"].pop("userInputMessageContext", None)
+                    elif len(paired_tool_uses) < len(tool_uses):
+                        # 部分孤立，只保留有配对的
+                        last_assistant["toolUses"] = paired_tool_uses
             
             fixed.append(item)
         

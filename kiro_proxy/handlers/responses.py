@@ -232,6 +232,25 @@ def _convert_responses_input_to_kiro(input_data, instructions: str = None):
                     # assistant 没有 toolUses 但 user 有 toolResults，清除 toolResults
                     print(f"[Responses] Warning: history[{i}] has no toolUses but history[{i+1}] has toolResults, removing toolResults")
                     user.pop("userInputMessageContext", None)
+                elif has_tool_uses and has_tool_results:
+                    # 两者都有，按 ID 精确配对，移除孤立的 toolUse
+                    tool_result_ids = set()
+                    for tr in ctx.get("toolResults", []):
+                        tr_id = tr.get("toolUseId")
+                        if tr_id:
+                            tool_result_ids.add(tr_id)
+
+                    tool_uses = assistant.get("toolUses", [])
+                    paired_tool_uses = [tu for tu in tool_uses if tu.get("toolUseId") in tool_result_ids]
+
+                    if not paired_tool_uses:
+                        print(f"[Responses] Warning: history[{i}] toolUses have no matching toolResults, removing all")
+                        assistant.pop("toolUses", None)
+                        user.pop("userInputMessageContext", None)
+                    elif len(paired_tool_uses) < len(tool_uses):
+                        orphaned_count = len(tool_uses) - len(paired_tool_uses)
+                        print(f"[Responses] Warning: history[{i}] has {orphaned_count} orphaned toolUses, removing them")
+                        assistant["toolUses"] = paired_tool_uses
 
     images = pending_images if pending_images else None
     return user_content, history, tool_results, images
@@ -440,6 +459,17 @@ async def handle_responses(request: Request):
             if tool_use_ids:
                 filtered_results = [tr for tr in tool_results if tr.get("toolUseId") in tool_use_ids]
                 tool_results = filtered_results
+
+                # 反向清理：移除 assistant 中没有对应 tool_result 的孤立 toolUse
+                tool_result_ids = set(tr.get("toolUseId") for tr in tool_results if tr.get("toolUseId"))
+                if tool_result_ids and len(tool_result_ids) < len(tool_use_ids):
+                    orphaned_count = len(tool_use_ids) - len(tool_result_ids)
+                    print(f"[Responses] Warning: last assistant has {orphaned_count} orphaned toolUses in current request, removing them")
+                    paired = [tu for tu in last_assistant.get("toolUses", []) if tu.get("toolUseId") in tool_result_ids]
+                    if paired:
+                        last_assistant["toolUses"] = paired
+                    else:
+                        last_assistant.pop("toolUses", None)
             else:
                 # 如果最后一个 assistant 没有 toolUses，清空 tool_results
                 tool_results = []
