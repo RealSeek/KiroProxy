@@ -20,7 +20,8 @@ from ..converters import (
     convert_anthropic_tools_to_kiro,
     convert_anthropic_messages_to_kiro,
     convert_kiro_response_to_anthropic,
-    extract_images_from_content
+    extract_images_from_content,
+    extract_thinking_from_content
 )
 from .websearch import has_web_search_tool, handle_web_search_request, filter_web_search_tools
 
@@ -124,16 +125,18 @@ async def handle_messages(request: Request):
     system = body.get("system", "")
     stream = body.get("stream", False)
     tools = body.get("tools", [])
+    thinking = body.get("thinking")
+    output_config = body.get("output_config")
 
     if not messages:
         raise HTTPException(400, "messages required")
-    
+
     session_id = generate_session_id(messages)
     account = state.get_available_account(session_id)
-    
+
     if not account:
         raise HTTPException(503, "All accounts are rate limited or unavailable")
-    
+
     # 创建 Flow 记录
     flow_id = flow_monitor.create_flow(
         protocol="anthropic",
@@ -191,8 +194,8 @@ async def handle_messages(request: Request):
         await asyncio.sleep(wait_seconds)
     
     # 转换消息格式
-    user_content, history, tool_results = convert_anthropic_messages_to_kiro(messages, system)
-    
+    user_content, history, tool_results = convert_anthropic_messages_to_kiro(messages, system, thinking, output_config)
+
     # 历史消息预处理
     history_manager = HistoryManager(get_history_config(), cache_key=session_id)
     
@@ -352,10 +355,22 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                         # 正常处理响应
                         msg_id = f"msg_{log_id}"
                         yield f'event: message_start\ndata: {{"type":"message_start","message":{{"id":"{msg_id}","type":"message","role":"assistant","content":[],"model":"{model}","stop_reason":null,"stop_sequence":null,"usage":{{"input_tokens":0,"output_tokens":0}}}}}}\n\n'
-                        yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":0,"content_block":{{"type":"text","text":""}}}}\n\n'
 
                         full_response = b""
                         chunk_count = 0
+
+                        # Thinking buffer 状态机
+                        # phase: "buffering" -> "thinking" -> "text" 或 "buffering" -> "text"
+                        phase = "buffering"
+                        buffer = ""
+                        thinking_content = ""
+                        thinking_tail = ""  # 用于处理 </thinking> 跨 chunk 的情况
+                        block_index = 0
+                        # 缓冲阈值：如果累积了这么多字符还没看到 <thinking>，就认为没有 thinking
+                        BUFFER_THRESHOLD = 200
+                        # <thinking> 标签的所有可能前缀
+                        THINKING_TAG = "<thinking>"
+                        THINKING_PREFIXES = tuple(THINKING_TAG[:i] for i in range(1, len(THINKING_TAG)))
 
                         async for chunk in response.aiter_bytes():
                             chunk_count += 1
@@ -385,30 +400,134 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                                                 full_content += content
                                                 if flow_id:
                                                     flow_monitor.add_chunk(flow_id, content)
-                                                sse_event = f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":{json.dumps(content)}}}}}\n\n'
-                                                yield sse_event
+
+                                                if phase == "buffering":
+                                                    buffer += content
+                                                    # 检查是否包含完整的 <thinking> 开始标签
+                                                    if "<thinking>" in buffer:
+                                                        # 找到 thinking 标签
+                                                        tag_pos = buffer.index("<thinking>")
+                                                        before = buffer[:tag_pos].strip()
+
+                                                        # 发送 thinking block start
+                                                        yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"thinking","thinking":""}}}}\n\n'
+
+                                                        # 检查是否有完整的 </thinking>
+                                                        end_tag = "</thinking>"
+                                                        end_pos = buffer.find(end_tag, tag_pos + 10)
+                                                        if end_pos != -1:
+                                                            # 完整的 thinking 块
+                                                            thinking_content = buffer[tag_pos + 10:end_pos]
+                                                            yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"thinking_delta","thinking":{json.dumps(thinking_content)}}}}}\n\n'
+                                                            yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":{block_index}}}\n\n'
+                                                            block_index += 1
+
+                                                            # 剩余内容作为 text 开始流式输出
+                                                            remaining = buffer[end_pos + len(end_tag):]
+                                                            phase = "text"
+                                                            yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"text","text":""}}}}\n\n'
+                                                            if remaining.strip():
+                                                                yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"text_delta","text":{json.dumps(remaining)}}}}}\n\n'
+                                                        else:
+                                                            # thinking 还没结束，进入 thinking 阶段
+                                                            thinking_content = buffer[tag_pos + 10:]
+                                                            yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"thinking_delta","thinking":{json.dumps(thinking_content)}}}}}\n\n'
+                                                            phase = "thinking"
+
+                                                    elif len(buffer) > BUFFER_THRESHOLD or (buffer.strip() and not buffer.rstrip().endswith(THINKING_PREFIXES)):
+                                                        # 超过阈值，或者缓冲区末尾不是 <thinking> 的前缀，直接作为 text 输出
+                                                        phase = "text"
+                                                        yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"text","text":""}}}}\n\n'
+                                                        yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"text_delta","text":{json.dumps(buffer)}}}}}\n\n'
+
+                                                elif phase == "thinking":
+                                                    # 在 thinking 阶段，处理 </thinking> 可能跨 chunk 的情况
+                                                    combined = thinking_tail + content
+                                                    thinking_tail = ""
+                                                    end_tag = "</thinking>"
+                                                    if end_tag in combined:
+                                                        end_pos = combined.index(end_tag)
+                                                        # 发送 thinking 结束前的内容
+                                                        before_end = combined[:end_pos]
+                                                        if before_end:
+                                                            thinking_content += before_end
+                                                            yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"thinking_delta","thinking":{json.dumps(before_end)}}}}}\n\n'
+                                                        yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":{block_index}}}\n\n'
+                                                        block_index += 1
+
+                                                        # 切换到 text 阶段
+                                                        phase = "text"
+                                                        remaining = combined[end_pos + len(end_tag):]
+                                                        yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"text","text":""}}}}\n\n'
+                                                        if remaining.strip():
+                                                            yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"text_delta","text":{json.dumps(remaining)}}}}}\n\n'
+                                                    else:
+                                                        # 检查末尾是否可能是 </thinking> 的部分前缀
+                                                        safe_content = combined
+                                                        for i in range(min(len(end_tag) - 1, len(combined)), 0, -1):
+                                                            if combined.endswith(end_tag[:i]):
+                                                                thinking_tail = combined[-i:]
+                                                                safe_content = combined[:-i]
+                                                                break
+                                                        if safe_content:
+                                                            thinking_content += safe_content
+                                                            yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"thinking_delta","thinking":{json.dumps(safe_content)}}}}}\n\n'
+
+                                                elif phase == "text":
+                                                    # 正常流式输出 text
+                                                    yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"text_delta","text":{json.dumps(content)}}}}}\n\n'
+
                                         except Exception:
                                             pass
                                     pos += total_len
                             except Exception:
                                 pass
 
+                        # 流结束后处理
                         result = parse_event_stream_full(full_response)
 
-                        # 如果流式解析没有提取到内容，使用完整解析的结果
-                        parsed_content = "".join(result.get("content", []))
-                        if not full_content and parsed_content:
-                            full_content = parsed_content
-                            # 补发内容 delta
-                            yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":{json.dumps(full_content)}}}}}\n\n'
+                        if phase == "buffering":
+                            # 缓冲的内容还没发出去，用完整解析处理
+                            parsed_content = "".join(result.get("content", []))
+                            thinking_text, text_content = extract_thinking_from_content(parsed_content or buffer)
 
-                        yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":0}}\n\n'
+                            if thinking_text:
+                                yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"thinking","thinking":""}}}}\n\n'
+                                yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"thinking_delta","thinking":{json.dumps(thinking_text)}}}}}\n\n'
+                                yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":{block_index}}}\n\n'
+                                block_index += 1
+
+                            yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"text","text":""}}}}\n\n'
+                            if text_content:
+                                yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"text_delta","text":{json.dumps(text_content)}}}}}\n\n'
+
+                        elif phase == "thinking":
+                            # thinking 没有正常关闭，刷新残留的 tail
+                            if thinking_tail:
+                                yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"thinking_delta","thinking":{json.dumps(thinking_tail)}}}}}\n\n'
+                            yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":{block_index}}}\n\n'
+                            block_index += 1
+                            yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"text","text":""}}}}\n\n'
+
+                        elif phase == "text":
+                            # 正常 text 阶段，检查是否有未发送的内容
+                            if not full_content:
+                                parsed_content = "".join(result.get("content", []))
+                                if parsed_content:
+                                    full_content = parsed_content
+                                    _, text_only = extract_thinking_from_content(full_content)
+                                    yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"text_delta","text":{json.dumps(text_only)}}}}}\n\n'
+
+                        # content_block_stop (text)
+                        yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":{block_index}}}\n\n'
+                        block_index += 1
 
                         if result["tool_uses"]:
-                            for i, tool_use in enumerate(result["tool_uses"], 1):
-                                yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{i},"content_block":{{"type":"tool_use","id":"{tool_use["id"]}","name":"{tool_use["name"]}","input":{{}}}}}}\n\n'
-                                yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{i},"delta":{{"type":"input_json_delta","partial_json":{json.dumps(json.dumps(tool_use["input"]))}}}}}\n\n'
-                                yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":{i}}}\n\n'
+                            for tool_use in result["tool_uses"]:
+                                yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"tool_use","id":"{tool_use["id"]}","name":"{tool_use["name"]}","input":{{}}}}}}\n\n'
+                                yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"input_json_delta","partial_json":{json.dumps(json.dumps(tool_use["input"]))}}}}}\n\n'
+                                yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":{block_index}}}\n\n'
+                                block_index += 1
 
                         stop_reason = result["stop_reason"]
                         yield f'event: message_delta\ndata: {{"type":"message_delta","delta":{{"stop_reason":"{stop_reason}","stop_sequence":null}},"usage":{{"output_tokens":100}}}}\n\n'
@@ -667,6 +786,8 @@ async def handle_messages_cc(request: Request):
     system = body.get("system", "")
     stream = body.get("stream", False)
     tools = body.get("tools", [])
+    thinking = body.get("thinking")
+    output_config = body.get("output_config")
 
     if not messages:
         raise HTTPException(400, "messages required")
@@ -732,7 +853,7 @@ async def handle_messages_cc(request: Request):
         await asyncio.sleep(wait_seconds)
 
     # 转换消息格式
-    user_content, history, tool_results = convert_anthropic_messages_to_kiro(messages, system)
+    user_content, history, tool_results = convert_anthropic_messages_to_kiro(messages, system, thinking, output_config)
 
     # 历史消息预处理
     # Claude Code 客户端拥有自己的上下文管理能力（基于准确的 input_tokens）
@@ -950,25 +1071,38 @@ async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start
                         # 现在一次性发送所有事件
                         msg_id = f"msg_{log_id}"
 
+                        # 提取 thinking 内容
+                        thinking_text, text_content = extract_thinking_from_content(full_content)
+                        block_index = 0
+
                         # message_start - 使用准确的 input_tokens
                         yield f'event: message_start\ndata: {{"type":"message_start","message":{{"id":"{msg_id}","type":"message","role":"assistant","content":[],"model":"{model}","stop_reason":null,"stop_sequence":null,"usage":{{"input_tokens":{input_tokens},"output_tokens":1}}}}}}\n\n'
 
+                        # thinking block (如果有)
+                        if thinking_text:
+                            yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"thinking","thinking":""}}}}\n\n'
+                            yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"thinking_delta","thinking":{json.dumps(thinking_text)}}}}}\n\n'
+                            yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":{block_index}}}\n\n'
+                            block_index += 1
+
                         # content_block_start (text)
-                        yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":0,"content_block":{{"type":"text","text":""}}}}\n\n'
+                        yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"text","text":""}}}}\n\n'
 
                         # content_block_delta (text)
-                        if full_content:
-                            yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":{json.dumps(full_content)}}}}}\n\n'
+                        if text_content:
+                            yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"text_delta","text":{json.dumps(text_content)}}}}}\n\n'
 
                         # content_block_stop (text)
-                        yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":0}}\n\n'
+                        yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":{block_index}}}\n\n'
+                        block_index += 1
 
                         # tool_use blocks
                         if result["tool_uses"]:
-                            for i, tool_use in enumerate(result["tool_uses"], 1):
-                                yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{i},"content_block":{{"type":"tool_use","id":"{tool_use["id"]}","name":"{tool_use["name"]}","input":{{}}}}}}\n\n'
-                                yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{i},"delta":{{"type":"input_json_delta","partial_json":{json.dumps(json.dumps(tool_use["input"]))}}}}}\n\n'
-                                yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":{i}}}\n\n'
+                            for tool_use in result["tool_uses"]:
+                                yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"tool_use","id":"{tool_use["id"]}","name":"{tool_use["name"]}","input":{{}}}}}}\n\n'
+                                yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"input_json_delta","partial_json":{json.dumps(json.dumps(tool_use["input"]))}}}}}\n\n'
+                                yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":{block_index}}}\n\n'
+                                block_index += 1
 
                         stop_reason = result["stop_reason"]
 
@@ -1230,6 +1364,12 @@ def _build_anthropic_response_cc(result: dict, model: str, msg_id: str, input_to
 
     # 文本内容
     text = "".join(result.get("content", []))
+
+    # 提取 thinking 内容
+    thinking_text, text = extract_thinking_from_content(text)
+    if thinking_text:
+        content.append({"type": "thinking", "thinking": thinking_text})
+
     if text:
         content.append({"type": "text", "text": text})
 

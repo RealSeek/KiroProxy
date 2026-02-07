@@ -269,9 +269,74 @@ def fix_history_alternation(history: List[dict], model_id: str = "claude-sonnet-
     return fixed
 
 
-def convert_anthropic_messages_to_kiro(messages: List[dict], system="") -> Tuple[str, List[dict], List[dict]]:
+def extract_thinking_from_content(text: str) -> Tuple[str, str]:
+    """从响应文本中提取 <thinking> 标签内容
+
+    Args:
+        text: 包含可能的 <thinking> 标签的响应文本
+
+    Returns:
+        (thinking_text, remaining_text) - thinking 内容和剩余文本
+    """
+    if not text or "<thinking>" not in text:
+        return "", text
+
+    thinking_parts = []
+    remaining = text
+
+    # 提取所有完整的 <thinking>...</thinking> 块
+    pattern = re.compile(r'<thinking>(.*?)</thinking>', re.DOTALL)
+    matches = pattern.findall(remaining)
+    if matches:
+        thinking_parts.extend(matches)
+        remaining = pattern.sub('', remaining)
+
+    # 处理未闭合的 <thinking> 标签（取到末尾）
+    unclosed = re.search(r'<thinking>(.*)', remaining, re.DOTALL)
+    if unclosed:
+        thinking_parts.append(unclosed.group(1))
+        remaining = remaining[:unclosed.start()]
+
+    thinking_text = "\n".join(thinking_parts).strip()
+    remaining = remaining.strip()
+    return thinking_text, remaining
+
+
+def generate_thinking_prefix(thinking: dict = None, output_config: dict = None) -> str:
+    """生成 thinking 标签前缀
+
+    Args:
+        thinking: Anthropic thinking 配置，如 {"type": "enabled", "budget_tokens": 10000}
+        output_config: Anthropic output_config 配置，如 {"effort": "high"}
+
+    Returns:
+        thinking 前缀字符串，如果不需要则返回空字符串
+    """
+    if not thinking:
+        return ""
+
+    thinking_type = thinking.get("type", "")
+    if thinking_type == "enabled":
+        budget_tokens = thinking.get("budget_tokens", 20000)
+        return f"<thinking_mode>enabled</thinking_mode><max_thinking_length>{budget_tokens}</max_thinking_length>"
+    elif thinking_type == "adaptive":
+        effort = "high"
+        if output_config and isinstance(output_config, dict):
+            effort = output_config.get("effort", "high")
+        return f"<thinking_mode>adaptive</thinking_mode><thinking_effort>{effort}</thinking_effort>"
+
+    return ""
+
+
+def convert_anthropic_messages_to_kiro(messages: List[dict], system="", thinking: dict = None, output_config: dict = None) -> Tuple[str, List[dict], List[dict]]:
     """将 Anthropic 消息格式转换为 Kiro 格式
-    
+
+    Args:
+        messages: Anthropic 消息列表
+        system: 系统消息
+        thinking: Anthropic thinking 配置
+        output_config: Anthropic output_config 配置
+
     Returns:
         (user_content, history, tool_results)
     """
@@ -360,12 +425,16 @@ def convert_anthropic_messages_to_kiro(messages: List[dict], system="") -> Tuple
             # 在第一条用户消息时注入提示词和 system prompt
             if not history:
                 injection = get_prompt_injection()
+                # 生成 thinking 前缀
+                thinking_prefix = generate_thinking_prefix(thinking, output_config)
                 # 追加分块写入策略到系统消息
                 full_system = f"{system_text}\n{SYSTEM_CHUNKED_POLICY}" if system_text else ""
+                # 将 thinking 前缀放在最前面
+                prefix = f"{thinking_prefix}{injection}" if thinking_prefix else injection
                 if full_system:
-                    content = f"{injection}{full_system}\n\n{content}" if content else f"{injection}{full_system}"
-                elif injection:
-                    content = f"{injection}{content}" if content else injection.rstrip()
+                    content = f"{prefix}{full_system}\n\n{content}" if content else f"{prefix}{full_system}"
+                elif prefix:
+                    content = f"{prefix}{content}" if content else prefix.rstrip()
 
             if is_last:
                 user_content = content if content else "Continue"
@@ -423,6 +492,12 @@ def convert_kiro_response_to_anthropic(result: dict, model: str, msg_id: str) ->
     """将 Kiro 响应转换为 Anthropic 格式"""
     content = []
     text = "".join(result["content"])
+
+    # 提取 thinking 内容
+    thinking_text, text = extract_thinking_from_content(text)
+    if thinking_text:
+        content.append({"type": "thinking", "thinking": thinking_text})
+
     if text:
         content.append({"type": "text", "text": text})
     
