@@ -18,6 +18,20 @@ from typing import List, Dict, Any, Tuple, Optional
 # 常量
 MAX_TOOL_DESCRIPTION_LENGTH = 500
 
+# 追加到 Write 工具 description 末尾的内容
+WRITE_TOOL_DESCRIPTION_SUFFIX = "- IMPORTANT: If the content to write exceeds 150 lines, you MUST only write the first 50 lines using this tool, then use `Edit` tool to append the remaining content in chunks of no more than 50 lines each. If needed, leave a unique placeholder to help append content. Do NOT attempt to write all content at once."
+
+# 追加到 Edit 工具 description 末尾的内容
+EDIT_TOOL_DESCRIPTION_SUFFIX = "- IMPORTANT: If the `new_string` content exceeds 50 lines, you MUST split it into multiple Edit calls, each replacing no more than 50 lines at a time. If used to append content, leave a unique placeholder to help append content. On the final chunk, do NOT include the placeholder."
+
+# 追加到系统提示词的分块写入策略
+SYSTEM_CHUNKED_POLICY = (
+    "When the Write or Edit tool has content size limits, always comply silently. "
+    "Never suggest bypassing these limits via alternative tools. "
+    "Never ask the user whether to switch approaches. "
+    "Complete all chunked operations without commentary."
+)
+
 
 def get_prompt_injection() -> str:
     """获取提示词注入内容（如果启用）"""
@@ -120,6 +134,15 @@ def convert_anthropic_tools_to_kiro(tools: List[dict]) -> List[dict]:
         name = tool.get("name", "")
         description = tool.get("description", "")
         input_schema = tool.get("input_schema", {"type": "object", "properties": {}})
+
+        # 对 Write/Edit 工具追加分块写入策略描述
+        suffix = ""
+        if name == "Write":
+            suffix = WRITE_TOOL_DESCRIPTION_SUFFIX
+        elif name == "Edit":
+            suffix = EDIT_TOOL_DESCRIPTION_SUFFIX
+        if suffix:
+            description = description + "\n" + suffix
 
         # 截断描述（与 kiro.rs 一致，最多 10000 字符）
         if len(description) > 10000:
@@ -337,8 +360,10 @@ def convert_anthropic_messages_to_kiro(messages: List[dict], system="") -> Tuple
             # 在第一条用户消息时注入提示词和 system prompt
             if not history:
                 injection = get_prompt_injection()
-                if system_text:
-                    content = f"{injection}{system_text}\n\n{content}" if content else f"{injection}{system_text}"
+                # 追加分块写入策略到系统消息
+                full_system = f"{system_text}\n{SYSTEM_CHUNKED_POLICY}" if system_text else ""
+                if full_system:
+                    content = f"{injection}{full_system}\n\n{content}" if content else f"{injection}{full_system}"
                 elif injection:
                     content = f"{injection}{content}" if content else injection.rstrip()
 
@@ -450,6 +475,16 @@ def convert_openai_tools_to_kiro(tools: List[dict]) -> List[dict]:
         func = tool.get("function", {})
         name = func.get("name", "")
         description = func.get("description", f"Tool: {name}")
+
+        # 对 Write/Edit 工具追加分块写入策略描述
+        suffix = ""
+        if name == "Write":
+            suffix = WRITE_TOOL_DESCRIPTION_SUFFIX
+        elif name == "Edit":
+            suffix = EDIT_TOOL_DESCRIPTION_SUFFIX
+        if suffix:
+            description = description + "\n" + suffix
+
         # 截断描述（最多 10000 字符）
         if len(description) > 10000:
             description = description[:10000]
@@ -549,7 +584,9 @@ def convert_openai_messages_to_kiro(
             if not history:
                 injection = get_prompt_injection()
                 if system_content:
-                    content = f"{injection}{system_content}\n\n{content}"
+                    # 追加分块写入策略到系统消息
+                    full_system = f"{system_content}\n{SYSTEM_CHUNKED_POLICY}"
+                    content = f"{injection}{full_system}\n\n{content}"
                 elif injection:
                     content = f"{injection}{content}" if content else injection.rstrip()
             
@@ -720,6 +757,16 @@ def convert_gemini_tools_to_kiro(tools: List[dict]) -> List[dict]:
         for func in declarations:
             name = func.get("name", "")
             description = func.get("description", f"Tool: {name}")
+
+            # 对 Write/Edit 工具追加分块写入策略描述
+            suffix = ""
+            if name == "Write":
+                suffix = WRITE_TOOL_DESCRIPTION_SUFFIX
+            elif name == "Edit":
+                suffix = EDIT_TOOL_DESCRIPTION_SUFFIX
+            if suffix:
+                description = description + "\n" + suffix
+
             # 截断描述（最多 10000 字符）
             if len(description) > 10000:
                 description = description[:10000]
@@ -840,7 +887,9 @@ def convert_gemini_contents_to_kiro(
             if not history:
                 injection = get_prompt_injection()
                 if system_text:
-                    text = f"{injection}{system_text}{tool_instruction}\n\n{text}"
+                    # 追加分块写入策略到系统消息
+                    full_system = f"{system_text}\n{SYSTEM_CHUNKED_POLICY}"
+                    text = f"{injection}{full_system}{tool_instruction}\n\n{text}"
                 elif injection:
                     text = f"{injection}{text}" if text else injection.rstrip()
             
