@@ -1652,12 +1652,13 @@ async function loadFlows(){
       const duration=f.timing.duration_ms?f.timing.duration_ms.toFixed(0)+'ms':'-';
       const model=f.request?.model||'-';
       const tokens=f.response?.usage?(f.response.usage.input_tokens+'/'+f.response.usage.output_tokens):'-';
+      const client=f.client_key_name?`<span style="color:var(--info);font-size:0.75rem">[${f.client_key_name}]</span>`:'';
       return `
         <div style="display:flex;justify-content:space-between;align-items:center;padding:0.75rem;border:1px solid var(--border);border-radius:6px;margin-bottom:0.5rem;cursor:pointer" onclick="viewFlow('${f.id}')">
           <div style="flex:1">
             <div style="display:flex;align-items:center;gap:0.5rem">
               <span class="badge ${stateBadge}">${stateText}</span>
-              <span style="font-weight:500">${model}</span>
+              <span style="font-weight:500">${model}</span> ${client}
               ${f.bookmarked?'<span style="color:var(--warn)">★</span>':''}
             </div>
             <div style="color:var(--muted);font-size:0.75rem;margin-top:0.25rem">
@@ -1675,7 +1676,7 @@ async function viewFlow(id){
   try{
     const r=await fetch('/api/flows/'+id);
     const f=await r.json();
-    let html=`<div style="margin-bottom:1rem"><strong>ID:</strong> ${f.id}<br><strong>协议:</strong> ${f.protocol}<br><strong>状态:</strong> ${f.state}<br><strong>时间:</strong> ${new Date(f.timing.created_at*1000).toLocaleString()}<br><strong>延迟:</strong> ${f.timing.duration_ms?f.timing.duration_ms.toFixed(0)+'ms':'N/A'}</div>`;
+    let html=`<div style="margin-bottom:1rem"><strong>ID:</strong> ${f.id}<br><strong>协议:</strong> ${f.protocol}<br><strong>状态:</strong> ${f.state}<br>${f.client_key_name?'<strong>客户端:</strong> '+f.client_key_name+'<br>':''}<strong>时间:</strong> ${new Date(f.timing.created_at*1000).toLocaleString()}<br><strong>延迟:</strong> ${f.timing.duration_ms?f.timing.duration_ms.toFixed(0)+'ms':'N/A'}</div>`;
     if(f.request){
       html+=`<h4 style="margin-bottom:0.5rem">请求</h4><div style="margin-bottom:1rem"><strong>模型:</strong> ${f.request.model}<br><strong>流式:</strong> ${f.request.stream?'是':'否'}</div>`;
     }

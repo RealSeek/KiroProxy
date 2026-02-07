@@ -146,6 +146,8 @@ async def handle_messages(request: Request):
         body=body,
         account_id=account.id,
         account_name=account.name,
+        client_key_id=getattr(request.state, 'client_key_id', None),
+        client_key_name=getattr(request.state, 'client_key_name', None),
     )
     
     # 检查 token 是否即将过期，尝试刷新
@@ -866,6 +868,8 @@ async def handle_messages_cc(request: Request):
         body=body,
         account_id=account.id,
         account_name=account.name,
+        client_key_id=getattr(request.state, 'client_key_id', None),
+        client_key_name=getattr(request.state, 'client_key_name', None),
     )
 
     # 检查 token 是否即将过期，尝试刷新

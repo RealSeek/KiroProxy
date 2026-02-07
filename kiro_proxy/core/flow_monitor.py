@@ -120,7 +120,9 @@ class LLMFlow:
     protocol: str  # anthropic, openai, gemini
     account_id: Optional[str] = None
     account_name: Optional[str] = None
-    
+    client_key_id: Optional[str] = None
+    client_key_name: Optional[str] = None
+
     # 请求/响应
     request: Optional[FlowRequest] = None
     response: Optional[FlowResponse] = None
@@ -146,6 +148,8 @@ class LLMFlow:
             "protocol": self.protocol,
             "account_id": self.account_id,
             "account_name": self.account_name,
+            "client_key_id": self.client_key_id,
+            "client_key_name": self.client_key_name,
             "timing": {
                 "created_at": self.timing.created_at,
                 "first_byte_at": self.timing.first_byte_at,
@@ -249,6 +253,7 @@ class FlowStore:
         protocol: Optional[str] = None,
         model: Optional[str] = None,
         account_id: Optional[str] = None,
+        client_key_id: Optional[str] = None,
         state: Optional[FlowState] = None,
         has_error: Optional[bool] = None,
         bookmarked: Optional[bool] = None,
@@ -270,6 +275,8 @@ class FlowStore:
             if model and flow.request and flow.request.model != model:
                 continue
             if account_id and flow.account_id != account_id:
+                continue
+            if client_key_id and flow.client_key_id != client_key_id:
                 continue
             if state and flow.state != state:
                 continue
@@ -418,6 +425,8 @@ class FlowMonitor:
         body: Dict[str, Any],
         account_id: Optional[str] = None,
         account_name: Optional[str] = None,
+        client_key_id: Optional[str] = None,
+        client_key_name: Optional[str] = None,
     ) -> str:
         """创建新的 Flow"""
         flow_id = uuid.uuid4().hex[:12]
@@ -452,6 +461,8 @@ class FlowMonitor:
             protocol=protocol,
             account_id=account_id,
             account_name=account_name,
+            client_key_id=client_key_id,
+            client_key_name=client_key_name,
             request=request,
             timing=FlowTiming(created_at=time.time()),
         )
