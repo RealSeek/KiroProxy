@@ -402,26 +402,45 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                         # <thinking> 标签的所有可能前缀
                         THINKING_TAG = "<thinking>"
                         THINKING_PREFIXES = tuple(THINKING_TAG[:i] for i in range(1, len(THINKING_TAG)))
+                        pending_bytes = b""  # 跨 chunk 缓冲
+                        exception_stop_reason = None  # 流式 exception 检测
 
                         async for chunk in response.aiter_bytes():
                             chunk_count += 1
                             full_response += chunk
 
                             try:
+                                # 将上次残留的不完整数据与当前 chunk 拼接
+                                data = pending_bytes + chunk
+                                pending_bytes = b""
                                 pos = 0
-                                while pos < len(chunk):
-                                    if pos + 12 > len(chunk):
+                                while pos < len(data):
+                                    if pos + 12 > len(data):
+                                        # 不足以读取消息头，保留到下次
+                                        pending_bytes = data[pos:]
                                         break
-                                    total_len = int.from_bytes(chunk[pos:pos+4], 'big')
-                                    if total_len == 0 or total_len > len(chunk) - pos:
+                                    total_len = int.from_bytes(data[pos:pos+4], 'big')
+                                    if total_len == 0:
                                         break
-                                    headers_len = int.from_bytes(chunk[pos+4:pos+8], 'big')
+                                    if total_len > len(data) - pos:
+                                        # 消息不完整，保留到下次
+                                        pending_bytes = data[pos:]
+                                        break
+                                    headers_len = int.from_bytes(data[pos+4:pos+8], 'big')
                                     payload_start = pos + 12 + headers_len
                                     payload_end = pos + total_len - 4
 
                                     if payload_start < payload_end:
                                         try:
-                                            payload = json.loads(chunk[payload_start:payload_end].decode('utf-8'))
+                                            # 检测 exception 事件（从 headers 中）
+                                            try:
+                                                headers_str = data[pos + 12:pos + 12 + headers_len].decode('utf-8', errors='ignore')
+                                                if 'exception' in headers_str and 'ContentLengthExceeded' in headers_str:
+                                                    exception_stop_reason = "max_tokens"
+                                            except:
+                                                pass
+
+                                            payload = json.loads(data[payload_start:payload_end].decode('utf-8'))
                                             content = None
                                             if 'assistantResponseEvent' in payload:
                                                 content = payload['assistantResponseEvent'].get('content')
@@ -560,7 +579,7 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                                 yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":{block_index}}}\n\n'
                                 block_index += 1
 
-                        stop_reason = result["stop_reason"]
+                        stop_reason = exception_stop_reason or result["stop_reason"]
                         yield f'event: message_delta\ndata: {{"type":"message_delta","delta":{{"stop_reason":"{stop_reason}","stop_sequence":null}},"usage":{{"output_tokens":100}}}}\n\n'
                         yield f'event: message_stop\ndata: {{"type":"message_stop"}}\n\n'
 

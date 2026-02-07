@@ -129,15 +129,24 @@ class KiroProvider(BaseProvider):
 
         tool_input_buffer = {}
         pos = 0
+        stream_truncated = False
 
         while pos < len(raw):
             if pos + 12 > len(raw):
+                # 剩余字节不足以构成完整的 event-stream 消息头
+                if result["content"] or tool_input_buffer:
+                    stream_truncated = True
                 break
 
             total_len = int.from_bytes(raw[pos:pos+4], 'big')
             headers_len = int.from_bytes(raw[pos+4:pos+8], 'big')
 
-            if total_len == 0 or total_len > len(raw) - pos:
+            if total_len == 0:
+                break
+
+            if total_len > len(raw) - pos:
+                # 消息声明的长度超出可用数据，流被截断
+                stream_truncated = True
                 break
 
             header_start = pos + 12
@@ -153,6 +162,12 @@ class KiroProvider(BaseProvider):
                     event_type = 'assistantResponseEvent'
                 elif 'contextUsageEvent' in headers_str:
                     event_type = 'contextUsageEvent'
+                # AWS event-stream :message-type=exception 或 :exception-type header
+                elif 'exception' in headers_str:
+                    event_type = 'exception'
+                    # 直接从 headers 中检测 ContentLengthExceededException
+                    if 'ContentLengthExceeded' in headers_str:
+                        result["stop_reason"] = "max_tokens"
             except:
                 pass
 
@@ -195,28 +210,52 @@ class KiroProvider(BaseProvider):
                                 tool_input_buffer[tool_id]["name"] = tool_name
                             if tool_input:
                                 tool_input_buffer[tool_id]["input_parts"].append(tool_input)
+
+                    # 解析 exception 事件（如 ContentLengthExceededException）
+                    if event_type == 'exception':
+                        exception_type = payload.get('__type', '') or payload.get('exceptionType', '')
+                        if 'ContentLengthExceeded' in exception_type:
+                            result["stop_reason"] = "max_tokens"
                 except:
                     pass
 
             pos += total_len
 
-        # 组装工具调用
+        # 检测工具调用 JSON 是否被截断
+        tool_json_truncated = False
         for tool_id, tool_data in tool_input_buffer.items():
             input_str = "".join(tool_data["input_parts"])
             try:
-                input_json = json.loads(input_str)
-            except:
-                input_json = {"raw": input_str}
+                json.loads(input_str)
+            except (json.JSONDecodeError, ValueError):
+                tool_json_truncated = True
+                break
 
-            result["tool_uses"].append({
-                "type": "tool_use",
-                "id": tool_data["id"],
-                "name": tool_data["name"],
-                "input": input_json
-            })
+        # 组装工具调用（仅当 JSON 完整时）
+        if not tool_json_truncated:
+            for tool_id, tool_data in tool_input_buffer.items():
+                input_str = "".join(tool_data["input_parts"])
+                try:
+                    input_json = json.loads(input_str)
+                except:
+                    input_json = {"raw": input_str}
 
-        if result["tool_uses"]:
+                result["tool_uses"].append({
+                    "type": "tool_use",
+                    "id": tool_data["id"],
+                    "name": tool_data["name"],
+                    "input": input_json
+                })
+
+        # 决定 stop_reason（优先级：exception > tool_use > truncation > end_turn）
+        # 如果 exception 已经设置了 stop_reason（如 max_tokens），保持不变
+        if result["stop_reason"] != "end_turn":
+            # exception 已设置，保持优先
+            pass
+        elif result["tool_uses"]:
             result["stop_reason"] = "tool_use"
+        elif stream_truncated or tool_json_truncated:
+            result["stop_reason"] = "max_tokens"
 
         return result
     

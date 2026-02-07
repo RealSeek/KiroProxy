@@ -628,11 +628,12 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                     
                     # 3. 流式读取并发送 delta
                     full_response = b""
+                    pending_bytes = b""
                     async for chunk in response.aiter_bytes():
                         full_response += chunk
-                        
+
                         # 尝试解析增量内容
-                        content = _extract_content_from_chunk(chunk)
+                        content, pending_bytes = _extract_content_from_chunk(chunk, pending_bytes)
                         if content:
                             full_content += content
                             yield _sse("response.output_text.delta", {
@@ -741,26 +742,39 @@ def _sse(event_type: str, data: dict) -> str:
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
-def _extract_content_from_chunk(chunk: bytes) -> str:
-    """从 AWS event-stream chunk 中提取文本内容"""
+def _extract_content_from_chunk(chunk: bytes, pending: bytes = b"") -> tuple:
+    """从 AWS event-stream chunk 中提取文本内容
+
+    Args:
+        chunk: 当前接收到的字节数据
+        pending: 上次残留的不完整消息数据
+
+    Returns:
+        (content, remaining_pending) - 提取的文本内容和残留的不完整数据
+    """
     content = ""
+    data = pending + chunk
     pos = 0
-    
-    while pos < len(chunk):
-        if pos + 12 > len(chunk):
+
+    while pos < len(data):
+        if pos + 12 > len(data):
+            # 不足以读取消息头，保留到下次
+            return content, data[pos:]
+
+        total_len = int.from_bytes(data[pos:pos+4], 'big')
+        if total_len == 0:
             break
-        
-        total_len = int.from_bytes(chunk[pos:pos+4], 'big')
-        if total_len == 0 or total_len > len(chunk) - pos:
-            break
-        
-        headers_len = int.from_bytes(chunk[pos+4:pos+8], 'big')
+        if total_len > len(data) - pos:
+            # 消息不完整，保留到下次
+            return content, data[pos:]
+
+        headers_len = int.from_bytes(data[pos+4:pos+8], 'big')
         payload_start = pos + 12 + headers_len
         payload_end = pos + total_len - 4
-        
+
         if payload_start < payload_end:
             try:
-                payload = json.loads(chunk[payload_start:payload_end].decode('utf-8'))
+                payload = json.loads(data[payload_start:payload_end].decode('utf-8'))
                 if 'assistantResponseEvent' in payload:
                     c = payload['assistantResponseEvent'].get('content')
                     if c:
@@ -769,7 +783,7 @@ def _extract_content_from_chunk(chunk: bytes) -> str:
                     content += payload['content']
             except:
                 pass
-        
+
         pos += total_len
-    
-    return content
+
+    return content, b""
