@@ -1142,16 +1142,18 @@ async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start
                         # 获取从 contextUsageEvent 计算的 input_tokens
                         input_tokens = result.get("input_tokens") or 0
 
-                        # 估算 output_tokens
-                        output_tokens = _estimate_tokens(full_content)
+                        # 提取 thinking 内容
+                        thinking_text, text_content = extract_thinking_from_content(full_content)
+
+                        # 估算 output_tokens（排除 thinking 内容，只计算 text + tool_use）
+                        # Claude Code 有 CLAUDE_CODE_MAX_OUTPUT_TOKENS 限制（默认 32000），
+                        # thinking tokens 不应计入 output_tokens，否则会触发该限制
+                        output_tokens = _estimate_tokens(text_content)
                         for tool_use in result.get("tool_uses", []):
                             output_tokens += _estimate_tokens(json.dumps(tool_use.get("input", {})))
 
                         # 现在一次性发送所有事件
                         msg_id = f"msg_{log_id}"
-
-                        # 提取 thinking 内容
-                        thinking_text, text_content = extract_thinking_from_content(full_content)
                         block_index = 0
 
                         # message_start - 使用准确的 input_tokens
@@ -1358,9 +1360,10 @@ async def _handle_non_stream_cc(kiro_request, headers, account, model, log_id, s
                 # 获取从 contextUsageEvent 计算的 input_tokens
                 input_tokens = result.get("input_tokens") or 0
 
-                # 估算 output_tokens
+                # 估算 output_tokens（排除 thinking 内容，避免触发 Claude Code 的 output token 限制）
                 full_content = "".join(result.get("content", []))
-                output_tokens = _estimate_tokens(full_content)
+                _, text_only = extract_thinking_from_content(full_content)
+                output_tokens = _estimate_tokens(text_only)
                 for tool_use in result.get("tool_uses", []):
                     output_tokens += _estimate_tokens(json.dumps(tool_use.get("input", {})))
 
