@@ -573,9 +573,18 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                         block_index += 1
 
                         if result["tool_uses"]:
-                            for tool_use in result["tool_uses"]:
+                            tool_inputs_raw = result.get("tool_uses_raw") or []
+                            for tool_index, tool_use in enumerate(result["tool_uses"]):
+                                if tool_index < len(tool_inputs_raw):
+                                    partial_json = tool_inputs_raw[tool_index]
+                                else:
+                                    partial_json = json.dumps(
+                                        tool_use.get("input", {}),
+                                        ensure_ascii=False,
+                                        separators=(",", ":")
+                                    )
                                 yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"tool_use","id":"{tool_use["id"]}","name":"{tool_use["name"]}","input":{{}}}}}}\n\n'
-                                yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"input_json_delta","partial_json":{json.dumps(json.dumps(tool_use["input"]))}}}}}\n\n'
+                                yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"input_json_delta","partial_json":{json.dumps(partial_json)}}}}}\n\n'
                                 yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":{block_index}}}\n\n'
                                 block_index += 1
 
@@ -861,10 +870,7 @@ async def handle_messages_cc(request: Request):
 
     # 检查 token 是否即将过期，尝试刷新
     if account.is_token_expiring_soon(5):
-        print(f"[CC/Anthropic] Token 即将过期，尝试刷新: {account.id}")
-        success, msg = await account.refresh_token()
-        if not success:
-            print(f"[CC/Anthropic] Token 刷新失败: {msg}")
+        await account.refresh_token()
 
     token = account.get_token()
     if not token:
@@ -882,10 +888,6 @@ async def handle_messages_cc(request: Request):
 
     # 检查是否为 WebSearch 请求
     if has_web_search_tool(tools):
-        other_tools = filter_web_search_tools(tools)
-        if other_tools:
-            print(f"[CC/Anthropic] 注意：请求中还有 {len(other_tools)} 个其他工具，将被忽略")
-
         return await handle_web_search_request(
             body=body,
             token=token,
@@ -897,9 +899,8 @@ async def handle_messages_cc(request: Request):
 
     # 限速检查
     rate_limiter = get_rate_limiter()
-    can_request, wait_seconds, reason = rate_limiter.can_request(account.id)
+    can_request, wait_seconds, _reason = rate_limiter.can_request(account.id)
     if not can_request:
-        print(f"[CC/Anthropic] 限速: {reason}")
         await asyncio.sleep(wait_seconds)
 
     # 转换消息格式
@@ -915,9 +916,6 @@ async def handle_messages_cc(request: Request):
     from ..converters import fix_history_alternation
     history = fix_history_alternation(history)
 
-    if history_manager.was_truncated:
-        print(f"[CC/Anthropic] {history_manager.truncate_info}")
-
     # 提取最后一条消息中的图片
     images = []
     if messages:
@@ -927,12 +925,6 @@ async def handle_messages_cc(request: Request):
 
     # 构建 Kiro 请求
     kiro_tools = convert_anthropic_tools_to_kiro(tools) if tools else None
-
-    # 调试：打印工具信息
-    if tools:
-        print(f"[CC/Anthropic] 收到 {len(tools)} 个工具，转换后 {len(kiro_tools) if kiro_tools else 0} 个")
-        for i, t in enumerate(tools[:5]):  # 只打印前5个
-            print(f"[CC/Anthropic]   工具 {i+1}: type={t.get('type', '')}, name={t.get('name', '')}")
 
     # 验证当前请求的 tool_results 与 history 最后一条 assistant 的 toolUses 配对
     if tool_results and history:
@@ -1027,7 +1019,6 @@ async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start
 
                             next_account = state.get_next_available_account(current_account.id)
                             if next_account and retry_count < max_retries:
-                                print(f"[CC/Stream] 配额超限，切换账号: {current_account.id} -> {next_account.id}")
                                 current_account = next_account
                                 token = current_account.get_token()
                                 headers["Authorization"] = f"Bearer {token}"
@@ -1060,7 +1051,6 @@ async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start
                         if response.status_code != 200:
                             error_text = await response.aread()
                             error_str = error_text.decode()
-                            print(f"[CC/Stream] Kiro API error {response.status_code}: {error_str[:200]}")
 
                             http_status, error_type, error_msg, error_obj = _handle_kiro_error(
                                 response.status_code, error_str, current_account
@@ -1069,7 +1059,6 @@ async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start
                             if error_obj.should_switch_account:
                                 next_account = state.get_next_available_account(current_account.id)
                                 if next_account and retry_count < max_retries:
-                                    print(f"[CC/Stream] 切换账号: {current_account.id} -> {next_account.id}")
                                     current_account = next_account
                                     headers["Authorization"] = f"Bearer {current_account.get_token()}"
                                     retry_count += 1
@@ -1081,9 +1070,6 @@ async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start
                                 history_chars, user_chars, total_chars = history_manager.estimate_request_chars(
                                     history, user_content
                                 )
-                                print(f"[CC/Stream] 内容长度超限: history={history_chars} chars, user={user_chars} chars, total={total_chars} chars")
-                                print(f"[CC/Stream] 返回 stop_reason=max_tokens 以触发 Claude Code 自动压缩")
-
                                 # 估算 input_tokens（基于字符数，约 4 字符/token）
                                 estimated_input_tokens = total_chars // 4
                                 # 确保接近上下文窗口限制，触发压缩
@@ -1149,8 +1135,17 @@ async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start
                         # Claude Code 有 CLAUDE_CODE_MAX_OUTPUT_TOKENS 限制（默认 32000），
                         # thinking tokens 不应计入 output_tokens，否则会触发该限制
                         output_tokens = _estimate_tokens(text_content)
-                        for tool_use in result.get("tool_uses", []):
-                            output_tokens += _estimate_tokens(json.dumps(tool_use.get("input", {})))
+                        tool_inputs_raw = result.get("tool_uses_raw") or []
+                        if tool_inputs_raw:
+                            for tool_input in tool_inputs_raw:
+                                output_tokens += _estimate_tokens(tool_input)
+                        else:
+                            for tool_use in result.get("tool_uses", []):
+                                output_tokens += _estimate_tokens(json.dumps(
+                                    tool_use.get("input", {}),
+                                    ensure_ascii=False,
+                                    separators=(",", ":")
+                                ))
 
                         # 现在一次性发送所有事件
                         msg_id = f"msg_{log_id}"
@@ -1178,10 +1173,19 @@ async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start
                         block_index += 1
 
                         # tool_use blocks
+                        tool_inputs_raw = result.get("tool_uses_raw") or []
                         if result["tool_uses"]:
-                            for tool_use in result["tool_uses"]:
+                            for tool_index, tool_use in enumerate(result["tool_uses"]):
+                                if tool_index < len(tool_inputs_raw):
+                                    partial_json = tool_inputs_raw[tool_index]
+                                else:
+                                    partial_json = json.dumps(
+                                        tool_use.get("input", {}),
+                                        ensure_ascii=False,
+                                        separators=(",", ":")
+                                    )
                                 yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"tool_use","id":"{tool_use["id"]}","name":"{tool_use["name"]}","input":{{}}}}}}\n\n'
-                                yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"input_json_delta","partial_json":{json.dumps(json.dumps(tool_use["input"]))}}}}}\n\n'
+                                yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"input_json_delta","partial_json":{json.dumps(partial_json)}}}}}\n\n'
                                 yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":{block_index}}}\n\n'
                                 block_index += 1
 
@@ -1213,7 +1217,6 @@ async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start
 
             except httpx.TimeoutException:
                 if retry_count < max_retries:
-                    print(f"[CC/Stream] 请求超时，重试 {retry_count + 1}/{max_retries}")
                     retry_count += 1
                     await asyncio.sleep(0.5 * (2 ** retry_count))
                     continue
@@ -1226,7 +1229,6 @@ async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start
                 return
             except httpx.ConnectError:
                 if retry_count < max_retries:
-                    print(f"[CC/Stream] 连接错误，重试 {retry_count + 1}/{max_retries}")
                     retry_count += 1
                     await asyncio.sleep(0.5 * (2 ** retry_count))
                     continue
@@ -1239,7 +1241,6 @@ async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start
                 return
             except Exception as e:
                 if is_retryable_error(None, e) and retry_count < max_retries:
-                    print(f"[CC/Stream] 网络错误，重试 {retry_count + 1}/{max_retries}: {type(e).__name__}")
                     retry_count += 1
                     await asyncio.sleep(0.5 * (2 ** retry_count))
                     continue
@@ -1274,7 +1275,6 @@ async def _handle_non_stream_cc(kiro_request, headers, account, model, log_id, s
 
                     next_account = state.get_next_available_account(current_account.id)
                     if next_account and retry < max_retries:
-                        print(f"[CC/NonStream] 配额超限，切换账号: {current_account.id} -> {next_account.id}")
                         current_account = next_account
                         token = current_account.get_token()
                         creds = current_account.get_credentials()
@@ -1297,7 +1297,6 @@ async def _handle_non_stream_cc(kiro_request, headers, account, model, log_id, s
 
                 if response.status_code != 200:
                     error_msg = response.text
-                    print(f"[CC/NonStream] Kiro API Error {response.status_code}: {error_msg[:500]}")
 
                     status, error_type, error_message, error_obj = _handle_kiro_error(
                         response.status_code, error_msg, current_account
@@ -1306,7 +1305,6 @@ async def _handle_non_stream_cc(kiro_request, headers, account, model, log_id, s
                     if error_obj.should_switch_account:
                         next_account = state.get_next_available_account(current_account.id)
                         if next_account and retry < max_retries:
-                            print(f"[CC/NonStream] 切换账号: {current_account.id} -> {next_account.id}")
                             current_account = next_account
                             headers["Authorization"] = f"Bearer {current_account.get_token()}"
                             continue
@@ -1316,9 +1314,6 @@ async def _handle_non_stream_cc(kiro_request, headers, account, model, log_id, s
                         history_chars, user_chars, total_chars = history_manager.estimate_request_chars(
                             history, user_content
                         )
-                        print(f"[CC/NonStream] 内容长度超限: history={history_chars} chars, user={user_chars} chars, total={total_chars} chars")
-                        print(f"[CC/NonStream] 返回 stop_reason=max_tokens 以触发 Claude Code 自动压缩")
-
                         # 估算 input_tokens
                         estimated_input_tokens = total_chars // 4
                         estimated_input_tokens = max(estimated_input_tokens, CONTEXT_WINDOW_SIZE - 1000)
@@ -1356,16 +1351,25 @@ async def _handle_non_stream_cc(kiro_request, headers, account, model, log_id, s
                 current_account.request_count += 1
                 current_account.last_used = time.time()
                 get_rate_limiter().record_request(current_account.id)
+                full_content = "".join(result.get("content", []))
 
                 # 获取从 contextUsageEvent 计算的 input_tokens
                 input_tokens = result.get("input_tokens") or 0
 
                 # 估算 output_tokens（排除 thinking 内容，避免触发 Claude Code 的 output token 限制）
-                full_content = "".join(result.get("content", []))
                 _, text_only = extract_thinking_from_content(full_content)
                 output_tokens = _estimate_tokens(text_only)
-                for tool_use in result.get("tool_uses", []):
-                    output_tokens += _estimate_tokens(json.dumps(tool_use.get("input", {})))
+                tool_inputs_raw = result.get("tool_uses_raw") or []
+                if tool_inputs_raw:
+                    for tool_input in tool_inputs_raw:
+                        output_tokens += _estimate_tokens(tool_input)
+                else:
+                    for tool_use in result.get("tool_uses", []):
+                        output_tokens += _estimate_tokens(json.dumps(
+                            tool_use.get("input", {}),
+                            ensure_ascii=False,
+                            separators=(",", ":")
+                        ))
 
                 # 完成 Flow
                 if flow_id:
@@ -1410,7 +1414,6 @@ async def _handle_non_stream_cc(kiro_request, headers, account, model, log_id, s
             error_msg = str(e)
             status_code = 500
             if is_retryable_error(None, e) and retry < max_retries:
-                print(f"[CC/NonStream] 网络错误，重试 {retry + 1}/{max_retries}: {type(e).__name__}")
                 await retry_ctx.wait()
                 continue
             if flow_id:

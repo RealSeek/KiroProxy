@@ -122,9 +122,12 @@ class KiroProvider(BaseProvider):
         result = {
             "content": [],
             "tool_uses": [],
+            "tool_uses_raw": [],
             "stop_reason": "end_turn",
             "context_usage_percentage": None,  # 从 contextUsageEvent 获取
             "input_tokens": None,  # 从 contextUsageEvent 计算
+            "stream_truncated": False,
+            "tool_json_truncated": False,
         }
 
         tool_input_buffer = {}
@@ -204,12 +207,22 @@ class KiroProvider(BaseProvider):
                                 tool_input_buffer[tool_id] = {
                                     "id": tool_id,
                                     "name": tool_name,
-                                    "input_parts": []
+                                    "input": ""
                                 }
                             if tool_name and not tool_input_buffer[tool_id]["name"]:
                                 tool_input_buffer[tool_id]["name"] = tool_name
                             if tool_input:
-                                tool_input_buffer[tool_id]["input_parts"].append(tool_input)
+                                current_input = tool_input_buffer[tool_id]["input"]
+                                if not current_input:
+                                    tool_input_buffer[tool_id]["input"] = tool_input
+                                elif tool_input.startswith(current_input):
+                                    # Handle cumulative tool input by replacing with the newest payload.
+                                    tool_input_buffer[tool_id]["input"] = tool_input
+                                elif current_input.startswith(tool_input):
+                                    # Ignore shorter duplicates.
+                                    pass
+                                else:
+                                    tool_input_buffer[tool_id]["input"] = current_input + tool_input
 
                     # 解析 exception 事件（如 ContentLengthExceededException）
                     if event_type == 'exception':
@@ -224,28 +237,28 @@ class KiroProvider(BaseProvider):
         # 检测工具调用 JSON 是否被截断
         tool_json_truncated = False
         for tool_id, tool_data in tool_input_buffer.items():
-            input_str = "".join(tool_data["input_parts"])
+            input_str = tool_data["input"]
             try:
                 json.loads(input_str)
             except (json.JSONDecodeError, ValueError):
                 tool_json_truncated = True
                 break
 
-        # 组装工具调用（仅当 JSON 完整时）
-        if not tool_json_truncated:
-            for tool_id, tool_data in tool_input_buffer.items():
-                input_str = "".join(tool_data["input_parts"])
-                try:
-                    input_json = json.loads(input_str)
-                except:
-                    input_json = {"raw": input_str}
+        # 组装工具调用（即使 JSON 不完整，也保留 raw）
+        for tool_id, tool_data in tool_input_buffer.items():
+            input_str = tool_data["input"]
+            try:
+                input_json = json.loads(input_str)
+            except:
+                input_json = {"raw": input_str}
 
-                result["tool_uses"].append({
-                    "type": "tool_use",
-                    "id": tool_data["id"],
-                    "name": tool_data["name"],
-                    "input": input_json
-                })
+            result["tool_uses"].append({
+                "type": "tool_use",
+                "id": tool_data["id"],
+                "name": tool_data["name"],
+                "input": input_json
+            })
+            result["tool_uses_raw"].append(input_str)
 
         # 决定 stop_reason（优先级：exception > tool_use > truncation > end_turn）
         # 如果 exception 已经设置了 stop_reason（如 max_tokens），保持不变
@@ -254,9 +267,10 @@ class KiroProvider(BaseProvider):
             pass
         elif result["tool_uses"]:
             result["stop_reason"] = "tool_use"
-        elif stream_truncated or tool_json_truncated:
-            result["stop_reason"] = "max_tokens"
+        # stream_truncated/tool_json_truncated 仅记录，不强制转成 max_tokens
 
+        result["stream_truncated"] = stream_truncated
+        result["tool_json_truncated"] = tool_json_truncated
         return result
     
     def parse_response_text(self, raw: bytes) -> str:
