@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 
 from ..config import MCP_API_URL
 from ..kiro_api import build_headers
+from ..core.history_manager import estimate_tokens_from_text
 
 
 def has_web_search_tool(tools: List[dict]) -> bool:
@@ -58,6 +59,31 @@ def extract_user_query(messages: List[dict]) -> str:
                         text_parts.append(block)
                 return " ".join(text_parts)
     return ""
+
+
+def _extract_text(content) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            parts.append(_extract_text(item))
+        return "".join(parts)
+    if isinstance(content, dict):
+        if "text" in content and isinstance(content.get("text"), str):
+            return content["text"]
+        if "content" in content:
+            return _extract_text(content.get("content"))
+    return str(content) if content else ""
+
+
+def _estimate_input_tokens(messages: List[dict], system: Any = None) -> int:
+    text = _extract_text(system)
+    for msg in messages or []:
+        text += _extract_text(msg.get("content"))
+    return estimate_tokens_from_text(text)
 
 
 def generate_tool_use_id() -> str:
@@ -185,9 +211,10 @@ async def handle_web_search_request(
     async def generate():
         msg_id = f"msg_{uuid.uuid4().hex[:8]}"
         tool_use_id = generate_tool_use_id()
+        input_tokens = _estimate_input_tokens(messages, body.get("system"))
 
         # 1. message_start
-        yield f'event: message_start\ndata: {{"type":"message_start","message":{{"id":"{msg_id}","type":"message","role":"assistant","content":[],"model":"{model}","stop_reason":null,"stop_sequence":null,"usage":{{"input_tokens":100,"output_tokens":0}}}}}}\n\n'
+        yield f'event: message_start\ndata: {{"type":"message_start","message":{{"id":"{msg_id}","type":"message","role":"assistant","content":[],"model":"{model}","stop_reason":null,"stop_sequence":null,"usage":{{"input_tokens":{input_tokens},"output_tokens":0}}}}}}\n\n'
 
         # 2. content_block_start - server_tool_use (web_search 调用)
         yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":0,"content_block":{{"type":"server_tool_use","id":"{tool_use_id}","name":"web_search"}}}}\n\n'
@@ -215,6 +242,7 @@ async def handle_web_search_request(
 
             # 8. 流式输出文本摘要
             summary = f"Based on the web search results for \"{query}\":\n\n{results_text}"
+            output_tokens = estimate_tokens_from_text(summary) + estimate_tokens_from_text(input_json)
 
             # 分块输出
             chunk_size = 50
@@ -227,13 +255,14 @@ async def handle_web_search_request(
         else:
             # 搜索失败，返回错误信息
             error_msg = result.get("error", "Web search failed")
+            output_tokens = estimate_tokens_from_text(str(error_msg)) + estimate_tokens_from_text(input_json)
 
             yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":1,"content_block":{{"type":"text","text":""}}}}\n\n'
             yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":1,"delta":{{"type":"text_delta","text":{json.dumps(f"I apologize, but the web search encountered an error: {error_msg}. Let me try to help you with what I know.")}}}}}\n\n'
             yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":1}}\n\n'
 
         # 9. message_delta - stop_reason
-        yield f'event: message_delta\ndata: {{"type":"message_delta","delta":{{"stop_reason":"end_turn","stop_sequence":null}},"usage":{{"output_tokens":200}}}}\n\n'
+        yield f'event: message_delta\ndata: {{"type":"message_delta","delta":{{"stop_reason":"end_turn","stop_sequence":null}},"usage":{{"output_tokens":{output_tokens}}}}}\n\n'
 
         # 10. message_stop
         yield f'event: message_stop\ndata: {{"type":"message_stop"}}\n\n'

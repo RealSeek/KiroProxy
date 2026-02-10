@@ -11,11 +11,28 @@ from fastapi.responses import StreamingResponse
 from ..config import KIRO_API_URL, map_model_name
 from ..core import state, is_retryable_error, stats_manager
 from ..core.state import RequestLog
-from ..core.history_manager import HistoryManager, get_history_config, is_content_length_error
+from ..core.history_manager import (
+    HistoryManager,
+    get_history_config,
+    is_content_length_error,
+    estimate_tokens_from_chars,
+    update_chars_per_token,
+)
 from ..core.error_handler import classify_error, ErrorType, format_error_log
 from ..core.rate_limiter import get_rate_limiter
-from ..kiro_api import build_headers, build_kiro_request, parse_event_stream, is_quota_exceeded_error
-from ..converters import generate_session_id, convert_openai_messages_to_kiro, extract_images_from_content
+from ..kiro_api import (
+    build_headers,
+    build_kiro_request,
+    parse_event_stream,
+    parse_event_stream_full,
+    is_quota_exceeded_error,
+)
+from ..converters import (
+    generate_session_id,
+    convert_openai_messages_to_kiro,
+    extract_images_from_content,
+    estimate_output_tokens,
+)
 
 
 async def handle_chat_completions(request: Request):
@@ -106,6 +123,10 @@ async def handle_chat_completions(request: Request):
         if last_msg.get("role") == "user":
             _, images = extract_images_from_content(last_msg.get("content", ""))
     
+    history_chars, user_chars, request_total_chars = history_manager.estimate_request_chars(
+        history, user_content
+    )
+
     kiro_request = build_kiro_request(
         user_content, model, history, 
         images=images,
@@ -116,6 +137,9 @@ async def handle_chat_completions(request: Request):
     error_msg = None
     status_code = 200
     content = ""
+    result = None
+    input_tokens = 0
+    output_tokens = 0
     current_account = account
     max_retries = 2
     
@@ -206,7 +230,17 @@ async def handle_chat_completions(request: Request):
                     
                     raise HTTPException(resp.status_code, error.user_message)
                 
-                content = parse_event_stream(resp.content)
+                result = parse_event_stream_full(resp.content)
+                content = "".join(result.get("content", []))
+                input_tokens = result.get("input_tokens") or 0
+                if input_tokens > 0 and request_total_chars > 0:
+                    update_chars_per_token(request_total_chars, input_tokens)
+                elif input_tokens <= 0:
+                    input_tokens = estimate_tokens_from_chars(request_total_chars)
+
+                output_tokens = result.get("output_tokens")
+                if output_tokens is None:
+                    output_tokens = estimate_output_tokens(result)
                 current_account.request_count += 1
                 current_account.last_used = time.time()
                 get_rate_limiter().record_request(current_account.id)
@@ -297,5 +331,9 @@ async def handle_chat_completions(request: Request):
             "message": {"role": "assistant", "content": content},
             "finish_reason": "stop"
         }],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        "usage": {
+            "prompt_tokens": input_tokens,
+            "completion_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens
+        }
     }

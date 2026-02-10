@@ -15,6 +15,8 @@ import hashlib
 import re
 from typing import List, Dict, Any, Tuple, Optional
 
+from .core.history_manager import estimate_tokens_from_text
+
 # 常量
 MAX_TOOL_DESCRIPTION_LENGTH = 500
 
@@ -31,6 +33,29 @@ SYSTEM_CHUNKED_POLICY = (
     "Never ask the user whether to switch approaches. "
     "Complete all chunked operations without commentary."
 )
+
+
+def _estimate_output_tokens(result: dict) -> int:
+    text = "".join(result.get("content", []))
+    _, text_only = extract_thinking_from_content(text)
+    output_tokens = estimate_tokens_from_text(text_only)
+    tool_inputs_raw = result.get("tool_uses_raw") or []
+    if tool_inputs_raw:
+        for tool_input in tool_inputs_raw:
+            output_tokens += estimate_tokens_from_text(tool_input)
+    else:
+        for tool_use in result.get("tool_uses", []):
+            output_tokens += estimate_tokens_from_text(json.dumps(
+                tool_use.get("input", {}),
+                ensure_ascii=False,
+                separators=(",", ":")
+            ))
+    return output_tokens
+
+
+def estimate_output_tokens(result: dict) -> int:
+    """估算输出 token 数量（文本 + 工具输入）"""
+    return _estimate_output_tokens(result)
 
 
 def get_prompt_injection() -> str:
@@ -306,17 +331,20 @@ def extract_thinking_from_content(text: str) -> Tuple[str, str]:
     pattern = re.compile(r'<thinking>(.*?)</thinking>', re.DOTALL)
     matches = pattern.findall(remaining)
     if matches:
-        thinking_parts.extend(matches)
+        # 剥离每段 thinking 内容开头的 \n（<thinking>\n 的 \n）
+        thinking_parts.extend(m.lstrip('\n') for m in matches)
         remaining = pattern.sub('', remaining)
 
     # 处理未闭合的 <thinking> 标签（取到末尾）
     unclosed = re.search(r'<thinking>(.*)', remaining, re.DOTALL)
     if unclosed:
-        thinking_parts.append(unclosed.group(1))
+        # 同样剥离前导换行
+        thinking_parts.append(unclosed.group(1).lstrip('\n'))
         remaining = remaining[:unclosed.start()]
 
     thinking_text = "\n".join(thinking_parts).strip()
-    remaining = remaining.strip()
+    # 只去前导换行（</thinking>\n\n 后的 \n\n），保留其他空白
+    remaining = remaining.lstrip('\n')
     return thinking_text, remaining
 
 
@@ -468,7 +496,8 @@ def convert_anthropic_messages_to_kiro(messages: List[dict], system="", thinking
         elif role == "assistant":
             tool_uses = []
             assistant_text = ""
-            
+            thinking_text = ""
+
             if isinstance(msg.get("content"), list):
                 text_parts = []
                 for block in msg["content"]:
@@ -481,13 +510,28 @@ def convert_anthropic_messages_to_kiro(messages: List[dict], system="", thinking
                             })
                         elif block.get("type") == "text":
                             text_parts.append(block.get("text", ""))
+                        elif block.get("type") == "thinking":
+                            # 提取 thinking 块内容，用于续传
+                            thinking_text += block.get("thinking", "")
                 assistant_text = "\n".join(text_parts)
             else:
                 assistant_text = content if isinstance(content, str) else ""
-            
+
+            # 组合 thinking 和 text 内容
+            # 格式: <thinking>思考内容</thinking>\n\ntext内容
+            # 这样模型在下一轮对话中能看到上次的思考内容，实现续传
+            if thinking_text:
+                if assistant_text and assistant_text.strip():
+                    assistant_text = f"<thinking>{thinking_text}</thinking>\n\n{assistant_text}"
+                else:
+                    assistant_text = f"<thinking>{thinking_text}</thinking>"
+
             # 确保 assistant 消息有内容
             if not assistant_text:
-                assistant_text = "I understand."
+                if tool_uses:
+                    assistant_text = " "
+                else:
+                    assistant_text = "I understand."
             
             assistant_msg = {
                 "assistantResponseMessage": {
@@ -518,10 +562,18 @@ def convert_kiro_response_to_anthropic(result: dict, model: str, msg_id: str) ->
 
     if text:
         content.append({"type": "text", "text": text})
+    elif thinking_text and not result.get("tool_uses"):
+        # only-thinking 场景：补空 text 块确保 content 数组完整
+        content.append({"type": "text", "text": " "})
     
     for tool_use in result["tool_uses"]:
         content.append(tool_use)
     
+    input_tokens = result.get("input_tokens") or 0
+    output_tokens = result.get("output_tokens")
+    if output_tokens is None:
+        output_tokens = _estimate_output_tokens(result)
+
     return {
         "id": msg_id,
         "type": "message",
@@ -530,7 +582,7 @@ def convert_kiro_response_to_anthropic(result: dict, model: str, msg_id: str) ->
         "model": model,
         "stop_reason": result["stop_reason"],
         "stop_sequence": None,
-        "usage": {"input_tokens": 100, "output_tokens": 100}
+        "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens}
     }
 
 
@@ -807,7 +859,12 @@ def convert_kiro_response_to_openai(result: dict, model: str, msg_id: str) -> di
     }
     if tool_calls:
         message["tool_calls"] = tool_calls
-    
+
+    input_tokens = result.get("input_tokens") or 0
+    output_tokens = result.get("output_tokens")
+    if output_tokens is None:
+        output_tokens = _estimate_output_tokens(result)
+
     return {
         "id": msg_id,
         "object": "chat.completion",
@@ -818,9 +875,9 @@ def convert_kiro_response_to_openai(result: dict, model: str, msg_id: str) -> di
             "finish_reason": finish_reason
         }],
         "usage": {
-            "prompt_tokens": 100,
-            "completion_tokens": 100,
-            "total_tokens": 200
+            "prompt_tokens": input_tokens,
+            "completion_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens
         }
     }
 
@@ -1091,7 +1148,12 @@ def convert_kiro_response_to_gemini(result: dict, model: str) -> dict:
         finish_reason = "TOOL_CALLS"
     elif stop_reason == "max_tokens":
         finish_reason = "MAX_TOKENS"
-    
+
+    input_tokens = result.get("input_tokens") or 0
+    output_tokens = result.get("output_tokens")
+    if output_tokens is None:
+        output_tokens = _estimate_output_tokens(result)
+
     return {
         "candidates": [{
             "content": {
@@ -1102,8 +1164,8 @@ def convert_kiro_response_to_gemini(result: dict, model: str) -> dict:
             "index": 0
         }],
         "usageMetadata": {
-            "promptTokenCount": 100,
-            "candidatesTokenCount": 100,
-            "totalTokenCount": 200
+            "promptTokenCount": input_tokens,
+            "candidatesTokenCount": output_tokens,
+            "totalTokenCount": input_tokens + output_tokens
         }
     }

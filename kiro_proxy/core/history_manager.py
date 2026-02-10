@@ -8,6 +8,7 @@
 """
 import json
 import httpx
+import math
 import time
 from typing import List, Dict, Any, Tuple, Optional, Callable
 from dataclasses import dataclass, field
@@ -170,6 +171,11 @@ Please be aware that your single response content (Output) must not exceed 8192 
 
 
 _summary_cache = SummaryCache()
+
+# 动态 token 估算参数
+_TOKEN_RATIO_MIN = 1.5
+_TOKEN_RATIO_MAX = 6.0
+_TOKEN_RATIO_EMA = 0.2
 
 
 class HistoryManager:
@@ -853,6 +859,29 @@ def update_history_config(data: dict):
     """更新历史消息配置"""
     global _history_config
     _history_config = HistoryConfig.from_dict(data)
+
+
+def estimate_tokens_from_chars(char_count: int) -> int:
+    """基于全局 chars_per_token 估算 token 数量"""
+    if char_count <= 0:
+        return 0
+    ratio = _history_config.chars_per_token or HistoryConfig().chars_per_token
+    return int(math.ceil(char_count / ratio))
+
+
+def estimate_tokens_from_text(text: str) -> int:
+    """基于文本内容估算 token 数量"""
+    return estimate_tokens_from_chars(len(text or ""))
+
+
+def update_chars_per_token(observed_chars: int, observed_tokens: int) -> None:
+    """用实际 input_tokens 反推并平滑更新 chars_per_token"""
+    if observed_chars <= 0 or observed_tokens <= 0:
+        return
+    ratio = observed_chars / observed_tokens
+    ratio = min(max(ratio, _TOKEN_RATIO_MIN), _TOKEN_RATIO_MAX)
+    current = _history_config.chars_per_token or HistoryConfig().chars_per_token
+    _history_config.chars_per_token = (current * (1.0 - _TOKEN_RATIO_EMA)) + (ratio * _TOKEN_RATIO_EMA)
 
 
 def is_content_length_error(status_code: int, error_text: str) -> bool:

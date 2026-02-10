@@ -1,5 +1,6 @@
 """Kiro Provider"""
 import json
+import os
 import uuid
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -8,6 +9,50 @@ from ..credential import (
     KiroCredentials, TokenRefresher,
     generate_machine_id, get_kiro_version, get_system_info
 )
+
+
+def _load_debug_usage_config() -> Tuple[bool, int]:
+    enabled = os.getenv("KIRO_DEBUG_USAGE", "").strip().lower() in {"1", "true", "yes", "y"}
+    max_chars = 2000
+    raw_max = os.getenv("KIRO_DEBUG_USAGE_MAX_CHARS", "").strip()
+    if raw_max:
+        try:
+            max_chars = max(200, int(raw_max))
+        except ValueError:
+            max_chars = 2000
+    return enabled, max_chars
+
+
+_DEBUG_USAGE_ENABLED, _DEBUG_USAGE_MAX_CHARS = _load_debug_usage_config()
+
+
+def _truncate_debug_payload(payload: Any, max_chars: int) -> str:
+    try:
+        text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        text = str(payload)
+    if len(text) > max_chars:
+        return f"{text[:max_chars]}...<truncated>"
+    return text
+
+
+def _extract_usage_fields(obj: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(obj, dict):
+        return None
+    usage_fields: Dict[str, Any] = {}
+    for key, value in obj.items():
+        if isinstance(key, str):
+            key_lower = key.lower()
+            if "token" in key_lower or "usage" in key_lower:
+                usage_fields[key] = value
+    return usage_fields or None
+
+
+def _debug_usage_log(tag: str, payload: Any) -> None:
+    if not _DEBUG_USAGE_ENABLED:
+        return
+    text = _truncate_debug_payload(payload, _DEBUG_USAGE_MAX_CHARS)
+    print(f"[Kiro][UsageDebug] {tag}: {text}")
 
 
 class KiroProvider(BaseProvider):
@@ -128,11 +173,14 @@ class KiroProvider(BaseProvider):
             "input_tokens": None,  # 从 contextUsageEvent 计算
             "stream_truncated": False,
             "tool_json_truncated": False,
+            "only_thinking": False,  # 是否仅包含 thinking 内容（无 text/tool_use）
         }
 
         tool_input_buffer = {}
         pos = 0
         stream_truncated = False
+        exception_stop_reason = None  # exception 事件设置的 stop_reason
+        context_window_exceeded = False  # 上下文窗口是否用尽
 
         while pos < len(raw):
             if pos + 12 > len(raw):
@@ -170,7 +218,7 @@ class KiroProvider(BaseProvider):
                     event_type = 'exception'
                     # 直接从 headers 中检测 ContentLengthExceededException
                     if 'ContentLengthExceeded' in headers_str:
-                        result["stop_reason"] = "max_tokens"
+                        exception_stop_reason = "max_tokens"
             except:
                 pass
 
@@ -180,6 +228,20 @@ class KiroProvider(BaseProvider):
             if payload_start < payload_end:
                 try:
                     payload = json.loads(raw[payload_start:payload_end].decode('utf-8'))
+
+                    if _DEBUG_USAGE_ENABLED and isinstance(payload, dict):
+                        logged_ctx_event = False
+                        if event_type == 'contextUsageEvent' or 'contextUsageEvent' in payload:
+                            ctx_event = payload.get('contextUsageEvent', payload)
+                            _debug_usage_log("contextUsageEvent", ctx_event)
+                            logged_ctx_event = True
+                        usage_fields = _extract_usage_fields(payload)
+                        if usage_fields and not logged_ctx_event:
+                            _debug_usage_log("payload.usage_fields", usage_fields)
+                        if "assistantResponseEvent" in payload:
+                            assistant_usage = _extract_usage_fields(payload["assistantResponseEvent"])
+                            if assistant_usage:
+                                _debug_usage_log("assistantResponseEvent.usage_fields", assistant_usage)
 
                     if 'assistantResponseEvent' in payload:
                         e = payload['assistantResponseEvent']
@@ -196,6 +258,9 @@ class KiroProvider(BaseProvider):
                             result["context_usage_percentage"] = percentage
                             # 计算实际 input_tokens: percentage * 200000 / 100
                             result["input_tokens"] = int(percentage * self.CONTEXT_WINDOW_SIZE / 100)
+                            # 上下文使用量达到 100% 时标记
+                            if percentage >= 100:
+                                context_window_exceeded = True
 
                     if event_type == 'toolUseEvent' or 'toolUseId' in payload:
                         tool_id = payload.get('toolUseId', '')
@@ -228,7 +293,7 @@ class KiroProvider(BaseProvider):
                     if event_type == 'exception':
                         exception_type = payload.get('__type', '') or payload.get('exceptionType', '')
                         if 'ContentLengthExceeded' in exception_type:
-                            result["stop_reason"] = "max_tokens"
+                            exception_stop_reason = "max_tokens"
                 except:
                     pass
 
@@ -260,14 +325,24 @@ class KiroProvider(BaseProvider):
             })
             result["tool_uses_raw"].append(input_str)
 
-        # 决定 stop_reason（优先级：exception > tool_use > truncation > end_turn）
-        # 如果 exception 已经设置了 stop_reason（如 max_tokens），保持不变
-        if result["stop_reason"] != "end_turn":
-            # exception 已设置，保持优先
-            pass
-        elif result["tool_uses"]:
+        # 决定 stop_reason（优先级：exception > tool_use > context_window_exceeded > only-thinking > end_turn）
+        # 检测 only-thinking：有 thinking 内容但无 text 和 tool_use
+        from ..converters import extract_thinking_from_content
+        full_text = "".join(result["content"])
+        thinking_text, remaining_text = extract_thinking_from_content(full_text)
+        has_tool_use = bool(result["tool_uses"])
+        is_only_thinking = bool(thinking_text) and (not remaining_text) and (not has_tool_use)
+        result["only_thinking"] = is_only_thinking
+
+        if exception_stop_reason:
+            result["stop_reason"] = exception_stop_reason
+        elif has_tool_use:
             result["stop_reason"] = "tool_use"
-        # stream_truncated/tool_json_truncated 仅记录，不强制转成 max_tokens
+        elif context_window_exceeded:
+            result["stop_reason"] = "model_context_window_exceeded"
+        elif is_only_thinking:
+            result["stop_reason"] = "max_tokens"
+        # else: 保持默认 "end_turn"
 
         result["stream_truncated"] = stream_truncated
         result["tool_json_truncated"] = tool_json_truncated

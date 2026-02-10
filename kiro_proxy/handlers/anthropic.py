@@ -10,7 +10,15 @@ from fastapi.responses import StreamingResponse
 from ..config import KIRO_API_URL, map_model_name
 from ..core import state, RetryableRequest, is_retryable_error, stats_manager, flow_monitor, TokenUsage
 from ..core.state import RequestLog
-from ..core.history_manager import HistoryManager, get_history_config, is_content_length_error, TruncateStrategy
+from ..core.history_manager import (
+    HistoryManager,
+    get_history_config,
+    is_content_length_error,
+    TruncateStrategy,
+    estimate_tokens_from_chars,
+    estimate_tokens_from_text,
+    update_chars_per_token,
+)
 from ..core.error_handler import classify_error, ErrorType, format_error_log
 from ..core.rate_limiter import get_rate_limiter
 from ..credential import quota_manager
@@ -20,6 +28,7 @@ from ..converters import (
     convert_anthropic_tools_to_kiro,
     convert_anthropic_messages_to_kiro,
     convert_kiro_response_to_anthropic,
+    estimate_output_tokens,
     extract_images_from_content,
     extract_thinking_from_content
 )
@@ -47,7 +56,7 @@ def _extract_text_from_content(content) -> str:
 def _estimate_tokens(text: str) -> int:
     if not text:
         return 0
-    return (len(text) + 3) // 4
+    return estimate_tokens_from_text(text)
 
 
 def _count_tokens_from_messages(messages, system: str = "") -> int:
@@ -397,13 +406,17 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                         phase = "buffering"
                         buffer = ""
                         thinking_content = ""
-                        thinking_tail = ""  # 用于处理 </thinking> 跨 chunk 的情况
+                        thinking_tail = ""  # 用于处理 </thinking>\n\n 跨 chunk 的情况
                         block_index = 0
+                        has_text_content = False  # 跟踪是否产生了非 thinking 文本
+                        strip_thinking_leading_newline = False  # 剥离 <thinking>\n 的 \n
                         # 缓冲阈值：如果累积了这么多字符还没看到 <thinking>，就认为没有 thinking
                         BUFFER_THRESHOLD = 200
                         # <thinking> 标签的所有可能前缀
                         THINKING_TAG = "<thinking>"
                         THINKING_PREFIXES = tuple(THINKING_TAG[:i] for i in range(1, len(THINKING_TAG)))
+                        # </thinking>\n\n 完整结束标签（13 字节）
+                        END_TAG_FULL = "</thinking>\n\n"
                         pending_bytes = b""  # 跨 chunk 缓冲
                         exception_stop_reason = None  # 流式 exception 检测
 
@@ -464,41 +477,73 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                                                         # 发送 thinking block start
                                                         yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"thinking","thinking":""}}}}\n\n'
 
-                                                        # 检查是否有完整的 </thinking>
-                                                        end_tag = "</thinking>"
-                                                        end_pos = buffer.find(end_tag, tag_pos + 10)
+                                                        # 检查是否有完整的 </thinking>\n\n
+                                                        end_pos = buffer.find(END_TAG_FULL, tag_pos + 10)
                                                         if end_pos != -1:
-                                                            # 完整的 thinking 块
+                                                            # 完整的 thinking 块（含 </thinking>\n\n）
                                                             thinking_content = buffer[tag_pos + 10:end_pos]
-                                                            yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"thinking_delta","thinking":{json.dumps(thinking_content)}}}}}\n\n'
+                                                            # 剥离 <thinking> 后的前导换行
+                                                            if thinking_content.startswith('\n'):
+                                                                thinking_content = thinking_content[1:]
+                                                            if thinking_content:
+                                                                yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"thinking_delta","thinking":{json.dumps(thinking_content)}}}}}\n\n'
                                                             yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":{block_index}}}\n\n'
                                                             block_index += 1
 
-                                                            # 剩余内容作为 text 开始流式输出
-                                                            remaining = buffer[end_pos + len(end_tag):]
+                                                            # 剩余内容作为 text（\n\n 已被 END_TAG_FULL 消费）
+                                                            remaining = buffer[end_pos + len(END_TAG_FULL):]
                                                             phase = "text"
                                                             yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"text","text":""}}}}\n\n'
                                                             if remaining.strip():
+                                                                has_text_content = True
                                                                 yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"text_delta","text":{json.dumps(remaining)}}}}}\n\n'
+                                                        elif "</thinking>" in buffer[tag_pos + 10:]:
+                                                            # 有 </thinking> 但没有 \n\n，可能 \n\n 在下一个 chunk
+                                                            # 进入 thinking 阶段，让 thinking_tail 保留逻辑处理
+                                                            thinking_content = buffer[tag_pos + 10:]
+                                                            # 剥离前导换行
+                                                            if thinking_content.startswith('\n'):
+                                                                thinking_content = thinking_content[1:]
+                                                            # 不直接发送，交给 thinking 阶段的 tail 保留逻辑
+                                                            # 将内容放入 thinking_tail 让下一次 thinking 阶段处理
+                                                            thinking_tail = thinking_content
+                                                            thinking_content = ""
+                                                            phase = "thinking"
                                                         else:
                                                             # thinking 还没结束，进入 thinking 阶段
                                                             thinking_content = buffer[tag_pos + 10:]
-                                                            yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"thinking_delta","thinking":{json.dumps(thinking_content)}}}}}\n\n'
+                                                            strip_thinking_leading_newline = True
+                                                            # 立即尝试剥离前导换行
+                                                            if thinking_content.startswith('\n'):
+                                                                thinking_content = thinking_content[1:]
+                                                                strip_thinking_leading_newline = False
+                                                            elif thinking_content:
+                                                                strip_thinking_leading_newline = False
+                                                            if thinking_content:
+                                                                yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"thinking_delta","thinking":{json.dumps(thinking_content)}}}}}\n\n'
                                                             phase = "thinking"
 
                                                     elif len(buffer) > BUFFER_THRESHOLD or (buffer.strip() and not buffer.rstrip().endswith(THINKING_PREFIXES)):
                                                         # 超过阈值，或者缓冲区末尾不是 <thinking> 的前缀，直接作为 text 输出
                                                         phase = "text"
+                                                        has_text_content = True
                                                         yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"text","text":""}}}}\n\n'
                                                         yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"text_delta","text":{json.dumps(buffer)}}}}}\n\n'
 
                                                 elif phase == "thinking":
-                                                    # 在 thinking 阶段，处理 </thinking> 可能跨 chunk 的情况
+                                                    # 在 thinking 阶段，处理 </thinking>\n\n 可能跨 chunk 的情况
                                                     combined = thinking_tail + content
                                                     thinking_tail = ""
-                                                    end_tag = "</thinking>"
-                                                    if end_tag in combined:
-                                                        end_pos = combined.index(end_tag)
+
+                                                    # 剥离 <thinking> 后的前导换行（跨 chunk 场景）
+                                                    if strip_thinking_leading_newline:
+                                                        if combined.startswith('\n'):
+                                                            combined = combined[1:]
+                                                        if combined:
+                                                            strip_thinking_leading_newline = False
+
+                                                    if END_TAG_FULL in combined:
+                                                        end_pos = combined.index(END_TAG_FULL)
                                                         # 发送 thinking 结束前的内容
                                                         before_end = combined[:end_pos]
                                                         if before_end:
@@ -507,17 +552,19 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                                                         yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":{block_index}}}\n\n'
                                                         block_index += 1
 
-                                                        # 切换到 text 阶段
+                                                        # 切换到 text 阶段（\n\n 已被 END_TAG_FULL 消费）
                                                         phase = "text"
-                                                        remaining = combined[end_pos + len(end_tag):]
+                                                        remaining = combined[end_pos + len(END_TAG_FULL):]
                                                         yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"text","text":""}}}}\n\n'
                                                         if remaining.strip():
+                                                            has_text_content = True
                                                             yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"text_delta","text":{json.dumps(remaining)}}}}}\n\n'
                                                     else:
-                                                        # 检查末尾是否可能是 </thinking> 的部分前缀
+                                                        # 检查末尾是否可能是 </thinking>\n\n 的部分前缀
+                                                        # 保留区长度为 12（END_TAG_FULL 长度 13 - 1）
                                                         safe_content = combined
-                                                        for i in range(min(len(end_tag) - 1, len(combined)), 0, -1):
-                                                            if combined.endswith(end_tag[:i]):
+                                                        for i in range(min(len(END_TAG_FULL) - 1, len(combined)), 0, -1):
+                                                            if combined.endswith(END_TAG_FULL[:i]):
                                                                 thinking_tail = combined[-i:]
                                                                 safe_content = combined[:-i]
                                                                 break
@@ -527,6 +574,7 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
 
                                                 elif phase == "text":
                                                     # 正常流式输出 text
+                                                    has_text_content = True
                                                     yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"text_delta","text":{json.dumps(content)}}}}}\n\n'
 
                                         except Exception:
@@ -537,6 +585,7 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
 
                         # 流结束后处理
                         result = parse_event_stream_full(full_response)
+                        is_only_thinking = result.get("only_thinking", False)
 
                         if phase == "buffering":
                             # 缓冲的内容还没发出去，用完整解析处理
@@ -551,15 +600,22 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
 
                             yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"text","text":""}}}}\n\n'
                             if text_content:
+                                has_text_content = True
                                 yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"text_delta","text":{json.dumps(text_content)}}}}}\n\n'
+                            elif is_only_thinking:
+                                # only-thinking 场景：补空 text 块
+                                yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"text_delta","text":" "}}}}\n\n'
 
                         elif phase == "thinking":
-                            # thinking 没有正常关闭，刷新残留的 tail
+                            # thinking 没有正常关闭（思考被中断），刷新残留的 tail
                             if thinking_tail:
                                 yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"thinking_delta","thinking":{json.dumps(thinking_tail)}}}}}\n\n'
                             yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":{block_index}}}\n\n'
                             block_index += 1
+                            # 补发 text 块（only-thinking 场景补空格）
                             yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"text","text":""}}}}\n\n'
+                            if is_only_thinking and not has_text_content:
+                                yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"text_delta","text":" "}}}}\n\n'
 
                         elif phase == "text":
                             # 正常 text 阶段，检查是否有未发送的内容
@@ -568,6 +624,8 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                                 if parsed_content:
                                     full_content = parsed_content
                                     _, text_only = extract_thinking_from_content(full_content)
+                                    if text_only:
+                                        has_text_content = True
                                     yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"text_delta","text":{json.dumps(text_only)}}}}}\n\n'
 
                         # content_block_stop (text)
@@ -590,6 +648,7 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                                 yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":{block_index}}}\n\n'
                                 block_index += 1
 
+                        # stop_reason 优先使用流式 exception 检测，否则使用 parse_response 统一结果
                         stop_reason = exception_stop_reason or result["stop_reason"]
                         yield f'event: message_delta\ndata: {{"type":"message_delta","delta":{{"stop_reason":"{stop_reason}","stop_sequence":null}},"usage":{{"output_tokens":100}}}}\n\n'
                         yield f'event: message_stop\ndata: {{"type":"message_stop"}}\n\n'
@@ -745,6 +804,12 @@ async def _handle_non_stream(kiro_request, headers, account, model, log_id, star
                     raise HTTPException(status, error_message)
 
                 result = parse_event_stream_full(response.content)
+                input_tokens = result.get("input_tokens") or 0
+                if history_manager and input_tokens > 0:
+                    _, _, total_chars = history_manager.estimate_request_chars(
+                        history or [], user_content
+                    )
+                    update_chars_per_token(total_chars, input_tokens)
                 current_account.request_count += 1
                 current_account.last_used = time.time()
                 get_rate_limiter().record_request(current_account.id)
@@ -1075,7 +1140,7 @@ async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start
                                     history, user_content
                                 )
                                 # 估算 input_tokens（基于字符数，约 4 字符/token）
-                                estimated_input_tokens = total_chars // 4
+                                estimated_input_tokens = estimate_tokens_from_chars(total_chars)
                                 # 确保接近上下文窗口限制，触发压缩
                                 estimated_input_tokens = max(estimated_input_tokens, CONTEXT_WINDOW_SIZE - 1000)
 
@@ -1131,9 +1196,19 @@ async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start
 
                         # 获取从 contextUsageEvent 计算的 input_tokens
                         input_tokens = result.get("input_tokens") or 0
+                        if history_manager and input_tokens > 0:
+                            _, _, total_chars = history_manager.estimate_request_chars(
+                                history or [], user_content
+                            )
+                            update_chars_per_token(total_chars, input_tokens)
 
                         # 提取 thinking 内容
                         thinking_text, text_content = extract_thinking_from_content(full_content)
+
+                        # only-thinking 场景：补空 text 确保 content 数组完整
+                        is_only_thinking = result.get("only_thinking", False)
+                        if is_only_thinking and not text_content:
+                            text_content = " "
 
                         # 估算 output_tokens（排除 thinking 内容，只计算 text + tool_use）
                         # Claude Code 有 CLAUDE_CODE_MAX_OUTPUT_TOKENS 限制（默认 32000），
@@ -1194,6 +1269,8 @@ async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start
                                 block_index += 1
 
                         stop_reason = result["stop_reason"]
+
+                        result["output_tokens"] = output_tokens
 
                         # message_delta - 使用准确的 token 数
                         yield f'event: message_delta\ndata: {{"type":"message_delta","delta":{{"stop_reason":"{stop_reason}","stop_sequence":null}},"usage":{{"input_tokens":{input_tokens},"output_tokens":{output_tokens}}}}}\n\n'
@@ -1319,7 +1396,7 @@ async def _handle_non_stream_cc(kiro_request, headers, account, model, log_id, s
                             history, user_content
                         )
                         # 估算 input_tokens
-                        estimated_input_tokens = total_chars // 4
+                        estimated_input_tokens = estimate_tokens_from_chars(total_chars)
                         estimated_input_tokens = max(estimated_input_tokens, CONTEXT_WINDOW_SIZE - 1000)
 
                         if flow_id:
@@ -1374,6 +1451,8 @@ async def _handle_non_stream_cc(kiro_request, headers, account, model, log_id, s
                             ensure_ascii=False,
                             separators=(",", ":")
                         ))
+
+                result["output_tokens"] = output_tokens
 
                 # 完成 Flow
                 if flow_id:
@@ -1461,6 +1540,9 @@ def _build_anthropic_response_cc(result: dict, model: str, msg_id: str, input_to
 
     if text:
         content.append({"type": "text", "text": text})
+    elif thinking_text and not result.get("tool_uses"):
+        # only-thinking 场景：补空 text 块确保 content 数组完整
+        content.append({"type": "text", "text": " "})
 
     # 工具调用
     for tool_use in result.get("tool_uses", []):

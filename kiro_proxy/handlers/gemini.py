@@ -10,7 +10,13 @@ from fastapi import Request, HTTPException
 from ..config import KIRO_API_URL, map_model_name
 from ..core import state, is_retryable_error
 from ..core.state import RequestLog
-from ..core.history_manager import HistoryManager, get_history_config, is_content_length_error
+from ..core.history_manager import (
+    HistoryManager,
+    get_history_config,
+    is_content_length_error,
+    estimate_tokens_from_chars,
+    update_chars_per_token,
+)
 from ..core.error_handler import classify_error, ErrorType, format_error_log
 from ..core.rate_limiter import get_rate_limiter
 from ..kiro_api import build_headers, build_kiro_request, parse_event_stream, parse_event_stream_full, is_quota_exceeded_error
@@ -136,6 +142,10 @@ async def handle_generate_content(model_name: str, request: Request):
         else:
             tool_results = []
 
+    history_chars, user_chars, request_total_chars = history_manager.estimate_request_chars(
+        history, user_content
+    )
+
     # 构建 Kiro 请求
     kiro_request = build_kiro_request(
         user_content, model, history,
@@ -234,6 +244,11 @@ async def handle_generate_content(model_name: str, request: Request):
                 
                 # 使用完整解析以支持工具调用
                 result = parse_event_stream_full(resp.content)
+                input_tokens = result.get("input_tokens") or 0
+                if input_tokens > 0 and request_total_chars > 0:
+                    update_chars_per_token(request_total_chars, input_tokens)
+                elif input_tokens <= 0:
+                    result["input_tokens"] = estimate_tokens_from_chars(request_total_chars)
                 current_account.request_count += 1
                 current_account.last_used = time.time()
                 get_rate_limiter().record_request(current_account.id)

@@ -13,10 +13,16 @@ from fastapi.responses import StreamingResponse
 from ..config import KIRO_API_URL, map_model_name
 from ..core import state, is_retryable_error, stats_manager
 from ..core.state import RequestLog
-from ..core.history_manager import HistoryManager, get_history_config
+from ..core.history_manager import (
+    HistoryManager,
+    get_history_config,
+    estimate_tokens_from_chars,
+    update_chars_per_token,
+)
 from ..core.error_handler import classify_error, ErrorType, format_error_log
 from ..core.rate_limiter import get_rate_limiter
 from ..kiro_api import build_headers, build_kiro_request, parse_event_stream, parse_event_stream_full, is_quota_exceeded_error
+from ..converters import estimate_output_tokens
 
 
 def _convert_responses_input_to_kiro(input_data, instructions: str = None):
@@ -486,7 +492,11 @@ async def handle_responses(request: Request):
             arm = msg["assistantResponseMessage"]
             if not arm.get("content"):
                 arm["content"] = "I understand."
-    
+
+    history_chars, user_chars, request_total_chars = history_manager.estimate_request_chars(
+        history, user_content
+    )
+
     kiro_request = build_kiro_request(
         user_content, model, history,
         tools=kiro_tools,
@@ -506,7 +516,7 @@ async def handle_responses(request: Request):
         })
     
     if stream:
-        return await _handle_stream(kiro_request, headers, account, model, log_id, start_time)
+        return await _handle_stream(kiro_request, headers, account, model, log_id, start_time, request_total_chars)
     
     # 非流式
     async with httpx.AsyncClient(verify=False, timeout=120) as client:
@@ -515,6 +525,11 @@ async def handle_responses(request: Request):
             raise HTTPException(resp.status_code, resp.text)
         
         result = parse_event_stream_full(resp.content)
+        input_tokens = result.get("input_tokens") or 0
+        if input_tokens > 0 and request_total_chars > 0:
+            update_chars_per_token(request_total_chars, input_tokens)
+        elif input_tokens <= 0:
+            result["input_tokens"] = estimate_tokens_from_chars(request_total_chars)
         account.request_count += 1
         account.last_used = time.time()
         get_rate_limiter().record_request(account.id)
@@ -543,7 +558,12 @@ def _build_response(result: dict, model: str, response_id: str) -> dict:
             "name": tool_use.get("name", ""),
             "arguments": json.dumps(tool_use.get("input", {}))
         })
-    
+
+    input_tokens = result.get("input_tokens") or 0
+    output_tokens = result.get("output_tokens")
+    if output_tokens is None:
+        output_tokens = estimate_output_tokens(result)
+
     return {
         "id": f"resp_{response_id}",
         "object": "response",
@@ -551,11 +571,15 @@ def _build_response(result: dict, model: str, response_id: str) -> dict:
         "status": "completed",
         "model": model,
         "output": output,
-        "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens
+        }
     }
 
 
-async def _handle_stream(kiro_request, headers, account, model, log_id, start_time):
+async def _handle_stream(kiro_request, headers, account, model, log_id, start_time, request_total_chars: int):
     """流式处理 - Codex 期望的 SSE 格式"""
 
     async def generate():
@@ -564,6 +588,8 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
         created_at = int(time.time())
         full_content = ""
         tool_uses = []
+        input_tokens = 0
+        output_tokens = 0
         error_occurred = False
 
         try:
@@ -646,6 +672,14 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                     
                     # 解析完整响应获取工具调用
                     result = parse_event_stream_full(full_response)
+                    input_tokens = result.get("input_tokens") or 0
+                    if input_tokens > 0 and request_total_chars > 0:
+                        update_chars_per_token(request_total_chars, input_tokens)
+                    elif input_tokens <= 0:
+                        input_tokens = estimate_tokens_from_chars(request_total_chars)
+                    output_tokens = result.get("output_tokens")
+                    if output_tokens is None:
+                        output_tokens = estimate_output_tokens(result)
                     tool_uses = result.get("tool_uses", [])
                     if not full_content:
                         full_content = "".join(result.get("content", []))
@@ -725,11 +759,11 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                 "model": model,
                 "output": output_items,
                 "usage": {
-                    "input_tokens": 0,
+                    "input_tokens": input_tokens,
                     "input_tokens_details": {"cached_tokens": 0},
-                    "output_tokens": 0,
+                    "output_tokens": output_tokens,
                     "output_tokens_details": {"reasoning_tokens": 0},
-                    "total_tokens": 0
+                    "total_tokens": input_tokens + output_tokens
                 }
             }
         })
