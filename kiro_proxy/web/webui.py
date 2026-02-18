@@ -487,6 +487,7 @@ unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_DISABLE_NONESSENTIAL_T
       <tbody>
         <tr><td><code>claude-sonnet-4</code></td><td>⭐⭐⭐ 推荐</td><td>gpt-4o, gpt-4, claude-3-5-sonnet-*, sonnet</td></tr>
         <tr><td><code>claude-sonnet-4.5</code></td><td>⭐⭐⭐⭐ 更强</td><td>gemini-1.5-pro</td></tr>
+        <tr><td><code>claude-sonnet-4.6</code></td><td>⭐⭐⭐⭐ 最新</td><td>claude-sonnet-4-6, claude-sonnet-4.6</td></tr>
         <tr><td><code>claude-haiku-4.5</code></td><td>⚡ 快速</td><td>gpt-4o-mini, gpt-3.5-turbo, haiku</td></tr>
         <tr><td><code>claude-opus-4.5</code></td><td>⭐⭐⭐⭐⭐ 强</td><td>claude-opus-4-5, claude-opus-4.5</td></tr>
         <tr><td><code>claude-opus-4.6</code></td><td>⭐⭐⭐⭐⭐ 最强</td><td>o1, o1-preview, opus</td></tr>

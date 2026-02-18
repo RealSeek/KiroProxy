@@ -115,6 +115,7 @@ Any client supporting OpenAI or Anthropic API can be used:
 |-----------|------|---------------------|
 | `claude-sonnet-4` | ⭐⭐⭐ Recommended | `gpt-4o`, `gpt-4`, `sonnet` |
 | `claude-sonnet-4.5` | ⭐⭐⭐⭐ Stronger | `gemini-1.5-pro` |
+| `claude-sonnet-4.6` | ⭐⭐⭐⭐ Latest Sonnet | `claude-sonnet-4-6` |
 | `claude-haiku-4.5` | ⚡ Fast | `gpt-4o-mini`, `gpt-3.5-turbo`, `haiku` |
 | `claude-opus-4.5` | ⭐⭐⭐⭐⭐ Strongest | `o1`, `o1-preview`, `opus` |
 | `auto` | 🤖 Auto | `auto` |

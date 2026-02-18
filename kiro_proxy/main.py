@@ -231,6 +231,7 @@ async def models():
     # 降级返回静态列表
     return {"object": "list", "data": [
         {"id": "auto", "object": "model", "owned_by": "kiro", "name": "Auto"},
+        {"id": "claude-sonnet-4.6", "object": "model", "owned_by": "kiro", "name": "Claude Sonnet 4.6"},
         {"id": "claude-sonnet-4.5", "object": "model", "owned_by": "kiro", "name": "Claude Sonnet 4.5"},
         {"id": "claude-sonnet-4", "object": "model", "owned_by": "kiro", "name": "Claude Sonnet 4"},
         {"id": "claude-haiku-4.5", "object": "model", "owned_by": "kiro", "name": "Claude Haiku 4.5"},

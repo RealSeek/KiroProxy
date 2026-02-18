@@ -128,6 +128,7 @@ Kiro 支持以下模型，你可以使用 Kiro 原生名称或映射名称：
 |-----------|------|---------------------|
 | `claude-sonnet-4` | ⭐⭐⭐ 推荐，性价比最高 | `gpt-4o`, `gpt-4`, `gpt-4-turbo`, `claude-3-5-sonnet-20241022`, `claude-3-5-sonnet-latest`, `sonnet` |
 | `claude-sonnet-4.5` | ⭐⭐⭐⭐ 更强，适合复杂任务 | `gemini-1.5-pro` |
+| `claude-sonnet-4.6` | ⭐⭐⭐⭐ 最新 Sonnet | `claude-sonnet-4-6` |
 | `claude-haiku-4.5` | ⚡ 快速，适合简单任务 | `gpt-4o-mini`, `gpt-3.5-turbo`, `claude-3-5-haiku-20241022`, `haiku` |
 | `claude-opus-4.5` | ⭐⭐⭐⭐⭐ 最强，适合高难度任务 | `o1`, `o1-preview`, `claude-3-opus-20240229`, `opus` |
 | `auto` | 🤖 自动选择 | `auto` |
