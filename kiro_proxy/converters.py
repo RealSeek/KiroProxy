@@ -135,6 +135,50 @@ def extract_images_from_content(content) -> Tuple[str, List[dict]]:
     return "\n".join(text_parts), images
 
 
+def normalize_json_schema(schema: dict) -> dict:
+    """规范化 JSON Schema，防止非法值导致上游 API 400 错误
+
+    处理 MCP 工具定义中可能出现的非法值：
+    - type: 必须是非空字符串，否则默认 "object"
+    - properties: 必须是 dict，否则替换为 {}
+    - required: 必须是字符串列表，过滤非字符串元素
+    - additionalProperties: 仅允许 bool 或 dict
+    """
+    if not isinstance(schema, dict):
+        return {"type": "object", "properties": {}}
+
+    # type
+    t = schema.get("type")
+    if not isinstance(t, str) or not t:
+        schema["type"] = "object"
+
+    # properties
+    if "properties" in schema and not isinstance(schema["properties"], dict):
+        schema["properties"] = {}
+
+    # required
+    if "required" in schema:
+        req = schema["required"]
+        if not isinstance(req, list):
+            schema["required"] = []
+        else:
+            schema["required"] = [r for r in req if isinstance(r, str)]
+
+    # additionalProperties
+    if "additionalProperties" in schema:
+        ap = schema["additionalProperties"]
+        if not isinstance(ap, (bool, dict)):
+            schema["additionalProperties"] = True
+
+    # 递归处理嵌套的 properties
+    if isinstance(schema.get("properties"), dict):
+        for key, value in schema["properties"].items():
+            if isinstance(value, dict):
+                schema["properties"][key] = normalize_json_schema(value)
+
+    return schema
+
+
 def truncate_description(desc: str, max_length: int = MAX_TOOL_DESCRIPTION_LENGTH) -> str:
     """截断工具描述"""
     if len(desc) <= max_length:
@@ -178,7 +222,7 @@ def convert_anthropic_tools_to_kiro(tools: List[dict]) -> List[dict]:
                 "name": name,
                 "description": description,
                 "inputSchema": {
-                    "json": input_schema
+                    "json": normalize_json_schema(input_schema)
                 }
             }
         })
@@ -640,7 +684,7 @@ def convert_openai_tools_to_kiro(tools: List[dict]) -> List[dict]:
                 "name": name,
                 "description": description,
                 "inputSchema": {
-                    "json": parameters
+                    "json": normalize_json_schema(parameters)
                 }
             }
         })
@@ -927,7 +971,7 @@ def convert_gemini_tools_to_kiro(tools: List[dict]) -> List[dict]:
                     "name": name,
                     "description": description,
                     "inputSchema": {
-                        "json": parameters
+                        "json": normalize_json_schema(parameters)
                     }
                 }
             })

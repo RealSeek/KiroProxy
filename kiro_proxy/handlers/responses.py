@@ -22,7 +22,7 @@ from ..core.history_manager import (
 from ..core.error_handler import classify_error, ErrorType, format_error_log
 from ..core.rate_limiter import get_rate_limiter
 from ..kiro_api import build_headers, build_kiro_request, parse_event_stream, parse_event_stream_full, is_quota_exceeded_error
-from ..converters import estimate_output_tokens
+from ..converters import estimate_output_tokens, normalize_json_schema
 
 
 def _convert_responses_input_to_kiro(input_data, instructions: str = None):
@@ -355,7 +355,7 @@ def _convert_tools_to_kiro(tools: list) -> list:
                 "name": name,
                 "description": description or f"Tool: {name}",
                 "inputSchema": {
-                    "json": parameters
+                    "json": normalize_json_schema(parameters)
                 }
             }
         })
