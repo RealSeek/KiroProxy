@@ -87,7 +87,7 @@ def get_kiro_version() -> str:
             except Exception:
                 pass
     
-    return "0.9.2"
+    return "0.10.0"
 
 
 def get_system_info() -> tuple:
