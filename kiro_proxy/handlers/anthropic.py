@@ -204,6 +204,10 @@ async def handle_messages(request: Request):
         print(f"[Anthropic] 限速: {reason}")
         await asyncio.sleep(wait_seconds)
     
+    # 截断末尾的 assistant prefill 消息（旧版客户端兼容，Kiro API 不支持此特性）
+    while messages and messages[-1].get("role") == "assistant":
+        messages = messages[:-1]
+
     # 转换消息格式
     user_content, history, tool_results = convert_anthropic_messages_to_kiro(messages, system, thinking, output_config)
 
@@ -971,6 +975,10 @@ async def handle_messages_cc(request: Request):
     can_request, wait_seconds, _reason = rate_limiter.can_request(account.id)
     if not can_request:
         await asyncio.sleep(wait_seconds)
+
+    # 截断末尾的 assistant prefill 消息（旧版客户端兼容，Kiro API 不支持此特性）
+    while messages and messages[-1].get("role") == "assistant":
+        messages = messages[:-1]
 
     # 转换消息格式
     user_content, history, tool_results = convert_anthropic_messages_to_kiro(messages, system, thinking, output_config)

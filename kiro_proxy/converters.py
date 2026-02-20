@@ -433,7 +433,7 @@ def convert_anthropic_messages_to_kiro(messages: List[dict], system="", thinking
     history = []
     user_content = ""
     current_tool_results = []
-    
+
     # 处理 system
     system_text = ""
     if isinstance(system, list):
