@@ -320,16 +320,42 @@ def fix_history_alternation(history: List[dict], model_id: str = "claude-sonnet-
             fixed.append(item)
         
         elif is_assistant:
-            # 检查上一条是否也是 assistant
+            # 检查上一条是否也是 assistant → 合并而非插入占位符
+            # 网络不稳定时 Claude Code 可能产生连续 assistant 消息，
+            # 需要合并以保留所有 toolUses，避免 tool_result 配对失败导致 400 错误
             if fixed and "assistantResponseMessage" in fixed[-1]:
-                # 插入一个占位 user 消息（不带 toolResults）
-                fixed.append({
-                    "userInputMessage": {
-                        "content": "Continue",
-                        "modelId": model_id,
-                        "origin": "AI_EDITOR"
-                    }
-                })
+                last_assistant = fixed[-1]["assistantResponseMessage"]
+                current_assistant = item["assistantResponseMessage"]
+
+                # 合并文本内容（跳过占位文本）
+                placeholder_texts = {"", " ", "I understand."}
+                last_text = last_assistant.get("content", "")
+                current_text = current_assistant.get("content", "")
+
+                text_parts = []
+                if last_text.strip() and last_text not in placeholder_texts:
+                    text_parts.append(last_text)
+                if current_text.strip() and current_text not in placeholder_texts:
+                    text_parts.append(current_text)
+
+                # 合并 toolUses
+                last_tool_uses = last_assistant.get("toolUses", [])
+                current_tool_uses = current_assistant.get("toolUses", [])
+                merged_tool_uses = last_tool_uses + current_tool_uses
+
+                # 设置合并后的文本
+                if text_parts:
+                    last_assistant["content"] = "\n".join(text_parts)
+                elif merged_tool_uses:
+                    last_assistant["content"] = " "
+                else:
+                    last_assistant["content"] = "I understand."
+
+                # 设置合并后的 toolUses
+                if merged_tool_uses:
+                    last_assistant["toolUses"] = merged_tool_uses
+
+                continue
             
             # 如果历史为空，先插入一个 user 消息
             if not fixed:
