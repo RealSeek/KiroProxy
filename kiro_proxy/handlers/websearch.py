@@ -247,20 +247,26 @@ async def handle_web_search_request(
         tool_use_id = generate_tool_use_id()
         input_tokens = _estimate_input_tokens(messages, body.get("system"))
 
-        # 1. message_start (含 server_tool_use.web_search_requests)
-        yield f'event: message_start\ndata: {{"type":"message_start","message":{{"id":"{msg_id}","type":"message","role":"assistant","content":[],"model":"{model}","stop_reason":null,"stop_sequence":null,"usage":{{"input_tokens":{input_tokens},"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{{"web_search_requests":1}}}}}}}}\n\n'
+        # 1. message_start
+        yield f'event: message_start\ndata: {{"type":"message_start","message":{{"id":"{msg_id}","type":"message","role":"assistant","content":[],"model":"{model}","stop_reason":null,"stop_sequence":null,"usage":{{"input_tokens":{input_tokens},"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}}}}\n\n'
 
-        # 2. content_block_start - server_tool_use (web_search 调用)
-        yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":0,"content_block":{{"type":"server_tool_use","id":"{tool_use_id}","name":"web_search"}}}}\n\n'
-
-        # 3. content_block_delta - input JSON
-        input_json = json.dumps({"query": query})
-        yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":0,"delta":{{"type":"input_json_delta","partial_json":{json.dumps(input_json)}}}}}\n\n'
-
-        # 4. content_block_stop
+        # 2. content_block_start - text (搜索决策说明, index 0)
+        decision_text = f'I\'ll search for "{query}".'
+        yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":0,"content_block":{{"type":"text","text":""}}}}\n\n'
+        yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":{json.dumps(decision_text)}}}}}\n\n'
         yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":0}}\n\n'
 
-        # 5. 调用 MCP API 执行搜索
+        # 3. content_block_start - server_tool_use (web_search 调用, index 1)
+        yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":1,"content_block":{{"type":"server_tool_use","id":"{tool_use_id}","name":"web_search"}}}}\n\n'
+
+        # 4. content_block_delta - input JSON
+        input_json = json.dumps({"query": query})
+        yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":1,"delta":{{"type":"input_json_delta","partial_json":{json.dumps(input_json)}}}}}\n\n'
+
+        # 5. content_block_stop
+        yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":1}}\n\n'
+
+        # 6. 调用 MCP API 执行搜索
         success, result = await call_mcp_web_search(query, token, machine_id, profile_arn, client_id)
 
         if success:
@@ -268,14 +274,14 @@ async def handle_web_search_request(
             web_results = transform_to_web_search_results(search_results)
             results_text = format_search_results_text(search_results)
 
-            # 6. content_block_start - web_search_tool_result
-            yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":1,"content_block":{{"type":"web_search_tool_result","tool_use_id":"{tool_use_id}","content":{json.dumps(web_results)}}}}}\n\n'
-            yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":1}}\n\n'
+            # 7. content_block_start - web_search_tool_result (index 2)
+            yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":2,"content_block":{{"type":"web_search_tool_result","tool_use_id":"{tool_use_id}","content":{json.dumps(web_results)}}}}}\n\n'
+            yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":2}}\n\n'
 
-            # 7. content_block_start - text (AI 总结)
-            yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":2,"content_block":{{"type":"text","text":""}}}}\n\n'
+            # 8. content_block_start - text (AI 总结, index 3)
+            yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":3,"content_block":{{"type":"text","text":""}}}}\n\n'
 
-            # 8. 流式输出文本摘要
+            # 9. 流式输出文本摘要
             summary = f"Based on the web search results for \"{query}\":\n\n{results_text}"
             output_tokens = estimate_tokens_from_text(summary) + estimate_tokens_from_text(input_json)
 
@@ -283,23 +289,23 @@ async def handle_web_search_request(
             chunk_size = 50
             for i in range(0, len(summary), chunk_size):
                 chunk = summary[i:i+chunk_size]
-                yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":2,"delta":{{"type":"text_delta","text":{json.dumps(chunk)}}}}}\n\n'
+                yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":3,"delta":{{"type":"text_delta","text":{json.dumps(chunk)}}}}}\n\n'
 
-            yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":2}}\n\n'
+            yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":3}}\n\n'
 
         else:
             # 搜索失败，返回错误信息
             error_msg = result.get("error", "Web search failed")
             output_tokens = estimate_tokens_from_text(str(error_msg)) + estimate_tokens_from_text(input_json)
 
-            yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":1,"content_block":{{"type":"text","text":""}}}}\n\n'
-            yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":1,"delta":{{"type":"text_delta","text":{json.dumps(f"I apologize, but the web search encountered an error: {error_msg}. Let me try to help you with what I know.")}}}}}\n\n'
-            yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":1}}\n\n'
+            yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":2,"content_block":{{"type":"text","text":""}}}}\n\n'
+            yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":2,"delta":{{"type":"text_delta","text":{json.dumps(f"I apologize, but the web search encountered an error: {error_msg}. Let me try to help you with what I know.")}}}}}\n\n'
+            yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":2}}\n\n'
 
-        # 9. message_delta - stop_reason
-        yield f'event: message_delta\ndata: {{"type":"message_delta","delta":{{"stop_reason":"end_turn","stop_sequence":null}},"usage":{{"output_tokens":{output_tokens}}}}}\n\n'
+        # 10. message_delta - stop_reason (含 server_tool_use.web_search_requests)
+        yield f'event: message_delta\ndata: {{"type":"message_delta","delta":{{"stop_reason":"end_turn","stop_sequence":null}},"usage":{{"output_tokens":{output_tokens},"server_tool_use":{{"web_search_requests":1}}}}}}\n\n'
 
-        # 10. message_stop
+        # 11. message_stop
         yield f'event: message_stop\ndata: {{"type":"message_stop"}}\n\n'
 
     return StreamingResponse(generate(), media_type="text/event-stream")
