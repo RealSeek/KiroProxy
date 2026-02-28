@@ -6,13 +6,14 @@ import json
 import uuid
 import time
 import secrets
+import string
 import httpx
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple
 from fastapi.responses import StreamingResponse
 
-from ..config import MCP_API_URL
-from ..kiro_api import build_headers
+from ..config import MCP_API_URL_TEMPLATE
+from ..credential import generate_machine_id, get_kiro_version, get_system_info
 from ..core.history_manager import estimate_tokens_from_text
 
 
@@ -88,19 +89,58 @@ def _estimate_input_tokens(messages: List[dict], system: Any = None) -> int:
 
 
 def generate_tool_use_id() -> str:
-    """生成工具调用 ID，格式: toolu_{22hex}"""
-    return f"toolu_{secrets.token_hex(11)}"
+    """生成服务端工具调用 ID，格式: srvtoolu_{32hex}"""
+    return f"srvtoolu_{uuid.uuid4().hex}"
 
 
-async def call_mcp_web_search(query: str, token: str, machine_id: str,
-                               profile_arn: str = None, client_id: str = None) -> Tuple[bool, dict]:
+def _generate_random_alnum(length: int) -> str:
+    """生成指定长度的大小写字母+数字随机字符串"""
+    charset = string.ascii_letters + string.digits
+    return "".join(secrets.choice(charset) for _ in range(length))
+
+
+def _generate_random_lower_alnum(length: int) -> str:
+    """生成指定长度的小写字母+数字随机字符串"""
+    charset = string.ascii_lowercase + string.digits
+    return "".join(secrets.choice(charset) for _ in range(length))
+
+
+def build_mcp_headers(token: str, machine_id: str) -> dict:
+    """构建 MCP API 专用请求头（不含 kiro-agent-mode / codewhisperer-optout）"""
+    kiro_version = get_kiro_version()
+    os_name, node_version = get_system_info()
+
+    return {
+        "content-type": "application/json",
+        "x-amz-user-agent": f"aws-sdk-js/1.0.27 KiroIDE-{kiro_version}-{machine_id}",
+        "user-agent": (
+            f"aws-sdk-js/1.0.27 ua/2.1 os/{os_name} lang/js "
+            f"md/nodejs#{node_version} api/codewhispererstreaming#1.0.27 "
+            f"m/E KiroIDE-{kiro_version}-{machine_id}"
+        ),
+        "amz-sdk-invocation-id": str(uuid.uuid4()),
+        "amz-sdk-request": "attempt=1; max=3",
+        "Authorization": f"Bearer {token}",
+        "Connection": "close",
+    }
+
+
+async def call_mcp_web_search(
+    query: str,
+    token: str,
+    machine_id: str,
+    region: str = "us-east-1",
+) -> Tuple[bool, dict]:
     """调用 MCP API 执行 web_search
 
     Returns:
         (success, result_or_error)
     """
-    # 构建 MCP 请求
-    request_id = f"web_search_{secrets.token_hex(11)}_{int(time.time())}_{secrets.token_hex(4)}"
+    # 构建 MCP 请求（ID 格式与 kiro.rs 一致: web_search_tooluse_{22}_{ts}_{8}）
+    random_22 = _generate_random_alnum(22)
+    timestamp = int(time.time() * 1000)
+    random_8 = _generate_random_lower_alnum(8)
+    request_id = f"web_search_tooluse_{random_22}_{timestamp}_{random_8}"
 
     mcp_request = {
         "id": request_id,
@@ -114,11 +154,16 @@ async def call_mcp_web_search(query: str, token: str, machine_id: str,
         }
     }
 
-    headers = build_headers(token, machine_id, profile_arn, client_id)
+    # MCP 专用 headers（不含 agent-mode / optout，含 host）
+    headers = build_mcp_headers(token, machine_id)
+    mcp_domain = f"q.{region}.amazonaws.com"
+    headers["host"] = mcp_domain
+
+    mcp_url = MCP_API_URL_TEMPLATE.format(region=region)
 
     try:
         async with httpx.AsyncClient(verify=False, timeout=60) as client:
-            resp = await client.post(MCP_API_URL, json=mcp_request, headers=headers)
+            resp = await client.post(mcp_url, json=mcp_request, headers=headers)
 
             if resp.status_code != 200:
                 return False, {"error": f"MCP API error: {resp.status_code}", "detail": resp.text[:500]}
@@ -136,19 +181,24 @@ async def call_mcp_web_search(query: str, token: str, machine_id: str,
 
 
 def parse_mcp_search_results(mcp_result: dict) -> List[dict]:
-    """解析 MCP 搜索结果"""
+    """解析 MCP 搜索结果
+
+    MCP 响应格式: {"result": {"content": [{"type": "text", "text": "..."}]}}
+    其中 text 是 JSON 字符串，格式为 {"results": [...], "totalResults": N}
+    """
     results = []
 
-    # MCP 响应格式: {"result": {"content": [{"type": "text", "text": "..."}]}}
     content = mcp_result.get("result", {}).get("content", [])
 
     for item in content:
         if item.get("type") == "text":
             text = item.get("text", "")
-            # 尝试解析为 JSON（搜索结果可能是 JSON 格式）
             try:
                 parsed = json.loads(text)
-                if isinstance(parsed, list):
+                if isinstance(parsed, dict) and "results" in parsed:
+                    # WebSearchResults 包装结构: {"results": [...], "totalResults": N}
+                    results.extend(parsed["results"])
+                elif isinstance(parsed, list):
                     results.extend(parsed)
                 elif isinstance(parsed, dict):
                     results.append(parsed)
@@ -225,8 +275,7 @@ async def handle_web_search_request(
     token: str,
     machine_id: str,
     model: str,
-    profile_arn: str = None,
-    client_id: str = None
+    region: str = "us-east-1",
 ) -> StreamingResponse:
     """处理包含 web_search 的请求，返回 Anthropic 格式的流式响应"""
 
@@ -243,7 +292,7 @@ async def handle_web_search_request(
     max_uses = ws_tool.get("max_uses", 5) if ws_tool else 5
 
     async def generate():
-        msg_id = f"msg_{uuid.uuid4().hex[:8]}"
+        msg_id = f"msg_{uuid.uuid4().hex[:24]}"
         tool_use_id = generate_tool_use_id()
         input_tokens = _estimate_input_tokens(messages, body.get("system"))
 
@@ -266,7 +315,7 @@ async def handle_web_search_request(
         yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":1}}\n\n'
 
         # 调用 MCP API 执行搜索
-        success, result = await call_mcp_web_search(query, token, machine_id, profile_arn, client_id)
+        success, result = await call_mcp_web_search(query, token, machine_id, region=region)
 
         if success:
             search_results = parse_mcp_search_results(result)

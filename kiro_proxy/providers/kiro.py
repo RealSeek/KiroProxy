@@ -112,10 +112,10 @@ class KiroProvider(BaseProvider):
             "content-type": "application/json",
             "x-amzn-codewhisperer-optout": "true",
             "x-amzn-kiro-agent-mode": agent_mode,
-            "x-amz-user-agent": f"aws-sdk-js/1.0.0 KiroIDE-{kiro_version}-{machine_id}",
-            "user-agent": f"aws-sdk-js/1.0.0 ua/2.1 os/{os_name} lang/js md/nodejs#{node_version} api/codewhispererruntime#1.0.0 m/E KiroIDE-{kiro_version}-{machine_id}",
+            "x-amz-user-agent": f"aws-sdk-js/1.0.27 KiroIDE-{kiro_version}-{machine_id}",
+            "user-agent": f"aws-sdk-js/1.0.27 ua/2.1 os/{os_name} lang/js md/nodejs#{node_version} api/codewhispererstreaming#1.0.27 m/E KiroIDE-{kiro_version}-{machine_id}",
             "amz-sdk-invocation-id": str(uuid.uuid4()),
-            "amz-sdk-request": "attempt=1; max=1",
+            "amz-sdk-request": "attempt=1; max=3",
             "Authorization": f"Bearer {token}",
             "Connection": "close",
         }

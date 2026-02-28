@@ -193,8 +193,7 @@ async def handle_messages(request: Request):
             token=token,
             machine_id=account.get_machine_id(),
             model=model,
-            profile_arn=creds.profile_arn if creds else None,
-            client_id=creds.client_id if creds else None
+            region=account.get_region(),
         )
 
     # 限速检查
@@ -966,8 +965,7 @@ async def handle_messages_cc(request: Request):
             token=token,
             machine_id=account.get_machine_id(),
             model=model,
-            profile_arn=creds.profile_arn if creds else None,
-            client_id=creds.client_id if creds else None
+            region=account.get_region(),
         )
 
     # 限速检查
