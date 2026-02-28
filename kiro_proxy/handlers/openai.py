@@ -27,6 +27,7 @@ from ..kiro_api import (
     parse_event_stream_full,
     is_quota_exceeded_error,
 )
+from ..core.compressor import compress_and_prepare, get_compression_config
 from ..converters import (
     generate_session_id,
     convert_openai_messages_to_kiro,
@@ -145,11 +146,12 @@ async def handle_chat_completions(request: Request):
     output_tokens = 0
     current_account = account
     max_retries = 2
-    
+    body = compress_and_prepare(kiro_request, get_compression_config())
+
     for retry in range(max_retries + 1):
         try:
             async with httpx.AsyncClient(verify=False, timeout=120) as client:
-                resp = await client.post(get_kiro_api_url(current_account.get_region()), json=kiro_request, headers=headers)
+                resp = await client.post(get_kiro_api_url(current_account.get_region()), content=body.encode("utf-8"), headers=headers)
                 status_code = resp.status_code
                 
                 # 处理配额超限
@@ -227,6 +229,7 @@ async def handle_chat_completions(request: Request):
                                 tools=kiro_tools if kiro_tools else None,
                                 tool_results=tool_results if tool_results else None
                             )
+                            body = compress_and_prepare(kiro_request, get_compression_config())
                             continue
                         else:
                             print(f"[OpenAI] 内容长度超限但未重试: retry={retry}/{max_retries}")

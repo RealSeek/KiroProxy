@@ -23,6 +23,11 @@ from .image_processor import (
     ImageConfig, ImageProcessResult, GifSamplingResult,
     get_image_config, set_image_config, update_image_config,
 )
+from .compressor import (
+    CompressionConfig, CompressionStats,
+    get_compression_config, set_compression_config, update_compression_config,
+    compress_and_prepare,
+)
 
 __all__ = [
     "state", "ProxyState", "RequestLog", "Account",
@@ -41,4 +46,7 @@ __all__ = [
     "ClientKeyManager", "ClientKey", "client_key_manager",
     "ImageConfig", "ImageProcessResult", "GifSamplingResult",
     "get_image_config", "set_image_config", "update_image_config",
+    "CompressionConfig", "CompressionStats",
+    "get_compression_config", "set_compression_config", "update_compression_config",
+    "compress_and_prepare",
 ]

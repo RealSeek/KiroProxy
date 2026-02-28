@@ -22,6 +22,7 @@ from ..core.history_manager import (
 from ..core.error_handler import classify_error, ErrorType, format_error_log
 from ..core.rate_limiter import get_rate_limiter
 from ..kiro_api import build_headers, build_kiro_request, parse_event_stream, parse_event_stream_full, is_quota_exceeded_error
+from ..core.compressor import compress_and_prepare, get_compression_config
 from ..converters import estimate_output_tokens, normalize_json_schema
 from ..converters import _process_and_collect_image
 
@@ -538,10 +539,11 @@ async def handle_responses(request: Request):
     
     if stream:
         return await _handle_stream(kiro_request, headers, account, model, log_id, start_time, request_total_chars)
-    
+
     # 非流式
+    body = compress_and_prepare(kiro_request, get_compression_config())
     async with httpx.AsyncClient(verify=False, timeout=120) as client:
-        resp = await client.post(get_kiro_api_url(account.get_region()), json=kiro_request, headers=headers)
+        resp = await client.post(get_kiro_api_url(account.get_region()), content=body.encode("utf-8"), headers=headers)
         if resp.status_code != 200:
             raise HTTPException(resp.status_code, resp.text)
         
@@ -612,10 +614,11 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
         input_tokens = 0
         output_tokens = 0
         error_occurred = False
+        body = compress_and_prepare(kiro_request, get_compression_config())
 
         try:
             async with httpx.AsyncClient(verify=False, timeout=300) as client:
-                async with client.stream("POST", get_kiro_api_url(account.get_region()), json=kiro_request, headers=headers) as response:
+                async with client.stream("POST", get_kiro_api_url(account.get_region()), content=body.encode("utf-8"), headers=headers) as response:
 
                     if response.status_code != 200:
                         error_text = await response.aread()

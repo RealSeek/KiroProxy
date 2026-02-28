@@ -23,6 +23,7 @@ from ..core.error_handler import classify_error, ErrorType, format_error_log
 from ..core.rate_limiter import get_rate_limiter
 from ..credential import quota_manager
 from ..kiro_api import build_headers, build_kiro_request, parse_event_stream_full, parse_event_stream, is_quota_exceeded_error
+from ..core.compressor import compress_and_prepare, get_compression_config
 from ..converters import (
     generate_session_id,
     convert_anthropic_tools_to_kiro,
@@ -290,6 +291,7 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
         full_content = ""
         final_status_code = 200
         final_error_msg = None
+        body = compress_and_prepare(kiro_request, get_compression_config())
 
         def record_log():
             """记录请求日志"""
@@ -309,7 +311,7 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
         while retry_count <= max_retries:
             try:
                 async with httpx.AsyncClient(verify=False, timeout=300) as client:
-                    async with client.stream("POST", get_kiro_api_url(current_account.get_region()), json=kiro_request, headers=headers) as response:
+                    async with client.stream("POST", get_kiro_api_url(current_account.get_region()), content=body.encode("utf-8"), headers=headers) as response:
 
                         # 处理配额超限
                         if response.status_code == 429 or is_quota_exceeded_error(response.status_code, ""):
@@ -385,6 +387,7 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                                     history = truncated_history
                                     # 重新构建请求
                                     kiro_request = build_kiro_request(user_content, model, history, kiro_tools, images, tool_results)
+                                    body = compress_and_prepare(kiro_request, get_compression_config())
                                     retry_count += 1
                                     continue
                             
@@ -733,11 +736,12 @@ async def _handle_non_stream(kiro_request, headers, account, model, log_id, star
     current_account = account
     max_retries = 2
     retry_ctx = RetryableRequest(max_retries=2)
+    body = compress_and_prepare(kiro_request, get_compression_config())
 
     for retry in range(max_retries + 1):
         try:
             async with httpx.AsyncClient(verify=False, timeout=300) as client:
-                response = await client.post(get_kiro_api_url(current_account.get_region()), json=kiro_request, headers=headers)
+                response = await client.post(get_kiro_api_url(current_account.get_region()), content=body.encode("utf-8"), headers=headers)
                 status_code = response.status_code
 
                 # 处理配额超限
@@ -801,6 +805,7 @@ async def _handle_non_stream(kiro_request, headers, account, model, log_id, star
                             print(f"[NonStream] 内容长度超限，{history_manager.truncate_info}")
                             history = truncated_history
                             kiro_request = build_kiro_request(user_content, model, history, kiro_tools, images, tool_results)
+                            body = compress_and_prepare(kiro_request, get_compression_config())
                             continue
                         else:
                             print(f"[NonStream] 内容长度超限但未重试: retry={retry}/{max_retries}")
@@ -1060,6 +1065,7 @@ async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start
         max_retries = 2
         final_status_code = 200
         final_error_msg = None
+        body = compress_and_prepare(kiro_request, get_compression_config())
 
         def record_log():
             """记录请求日志"""
@@ -1091,7 +1097,7 @@ async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start
                             if not should_stop_ping:
                                 yield 'event: ping\ndata: {"type": "ping"}\n\n'
 
-                    async with client.stream("POST", get_kiro_api_url(current_account.get_region()), json=kiro_request, headers=headers) as response:
+                    async with client.stream("POST", get_kiro_api_url(current_account.get_region()), content=body.encode("utf-8"), headers=headers) as response:
 
                         # 处理配额超限
                         if response.status_code == 429 or is_quota_exceeded_error(response.status_code, ""):
@@ -1354,11 +1360,12 @@ async def _handle_non_stream_cc(kiro_request, headers, account, model, log_id, s
     current_account = account
     max_retries = 2
     retry_ctx = RetryableRequest(max_retries=2)
+    body = compress_and_prepare(kiro_request, get_compression_config())
 
     for retry in range(max_retries + 1):
         try:
             async with httpx.AsyncClient(verify=False, timeout=300) as client:
-                response = await client.post(get_kiro_api_url(current_account.get_region()), json=kiro_request, headers=headers)
+                response = await client.post(get_kiro_api_url(current_account.get_region()), content=body.encode("utf-8"), headers=headers)
                 status_code = response.status_code
 
                 # 处理配额超限

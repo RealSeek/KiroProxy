@@ -35,6 +35,10 @@ async def lifespan(app: FastAPI):
     if "image_compression" in config:
         update_image_config(config["image_compression"])
         print("[Startup] Loaded image compression config")
+    if "compression" in config:
+        from .core.compressor import update_compression_config
+        update_compression_config(config["compression"])
+        print("[Startup] Loaded context compression config")
     await scheduler.start()
     yield
     # 关闭时
@@ -624,6 +628,27 @@ async def api_update_image_config(request: Request):
     config["image_compression"] = get_image_config().to_dict()
     save_config(config)
     return {"ok": True, "config": get_image_config().to_dict()}
+
+
+# ==================== 上下文压缩配置 API ====================
+
+from .core.compressor import get_compression_config, update_compression_config
+
+@app.get("/api/settings/compression")
+async def api_get_compression_config():
+    """获取上下文压缩配置"""
+    return get_compression_config().to_dict()
+
+
+@app.post("/api/settings/compression")
+async def api_update_compression_config(request: Request):
+    """更新上下文压缩配置"""
+    data = await request.json()
+    update_compression_config(data)
+    config = load_config()
+    config["compression"] = get_compression_config().to_dict()
+    save_config(config)
+    return {"ok": True, "config": get_compression_config().to_dict()}
 
 
 # ==================== 限速配置 API ====================
