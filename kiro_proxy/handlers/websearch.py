@@ -190,8 +190,8 @@ async def call_mcp_web_search(
 
             result = resp.json()
 
-            # 检查 JSON-RPC 错误
-            if "error" in result:
+            # 检查 JSON-RPC 错误（error 为 null 时跳过）
+            if result.get("error"):
                 err_msg = result["error"].get("message", "Unknown MCP error")
                 print(f"[WebSearch] MCP JSON-RPC error: {err_msg}")
                 return False, {"error": err_msg}
