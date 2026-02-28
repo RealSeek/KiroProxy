@@ -294,6 +294,98 @@ def convert_anthropic_tools_to_kiro(tools: List[dict]) -> List[dict]:
     return kiro_tools
 
 
+def validate_tool_pairing(
+    history: List[dict],
+    tool_results: List[dict],
+) -> Tuple[List[dict], set]:
+    """验证 tool_use↔tool_result 配对，过滤孤立/重复项
+
+    对应 kiro.rs converter.rs:validate_tool_pairing
+
+    Args:
+        history: Kiro 格式的历史消息列表
+        tool_results: 当前消息的 toolResults 列表
+
+    Returns:
+        (filtered_tool_results, orphaned_tool_use_ids)
+    """
+    # 1. 收集历史中所有 assistant 消息的 toolUseId
+    all_tool_use_ids: set = set()
+    # 2. 收集历史中已有 tool_result 的 toolUseId
+    history_tool_result_ids: set = set()
+
+    for msg in history:
+        assistant = msg.get("assistantResponseMessage")
+        if assistant:
+            for tu in assistant.get("toolUses", []):
+                tid = tu.get("toolUseId", "")
+                if tid:
+                    all_tool_use_ids.add(tid)
+
+        user = msg.get("userInputMessage")
+        if user:
+            ctx = user.get("userInputMessageContext", {})
+            for tr in ctx.get("toolResults", []):
+                tid = tr.get("toolUseId", "")
+                if tid:
+                    history_tool_result_ids.add(tid)
+
+    # 3. 计算未配对的 tool_use_ids
+    unpaired_tool_use_ids = all_tool_use_ids - history_tool_result_ids
+
+    # 4. 过滤当前消息的 tool_results
+    filtered_results = []
+    for tr in tool_results:
+        tid = tr.get("toolUseId", "")
+        if tid in unpaired_tool_use_ids:
+            # 配对成功
+            filtered_results.append(tr)
+            unpaired_tool_use_ids.discard(tid)
+        elif tid in all_tool_use_ids:
+            # 重复的 tool_result（已在历史中配对过）
+            print(f"[ToolPairing] 跳过重复的 tool_result: tool_use 已在历史中配对, toolUseId={tid}")
+        else:
+            # 孤立的 tool_result（找不到对应 tool_use）
+            print(f"[ToolPairing] 跳过孤立的 tool_result: 找不到对应的 tool_use, toolUseId={tid}")
+
+    # 5. 剩余的 unpaired 就是孤立的 tool_use
+    for orphaned_id in unpaired_tool_use_ids:
+        print(f"[ToolPairing] 检测到孤立的 tool_use: 将从历史中移除, toolUseId={orphaned_id}")
+
+    return filtered_results, unpaired_tool_use_ids
+
+
+def remove_orphaned_tool_uses(history: List[dict], orphaned_ids: set) -> None:
+    """从历史消息中移除孤立的 tool_use（原地修改）
+
+    对应 kiro.rs converter.rs:remove_orphaned_tool_uses
+
+    Kiro API 要求每个 tool_use 必须有对应的 tool_result，否则返回 400 Bad Request。
+    """
+    if not orphaned_ids:
+        return
+
+    for msg in history:
+        assistant = msg.get("assistantResponseMessage")
+        if not assistant:
+            continue
+        tool_uses = assistant.get("toolUses")
+        if not tool_uses:
+            continue
+
+        original_len = len(tool_uses)
+        assistant["toolUses"] = [
+            tu for tu in tool_uses
+            if tu.get("toolUseId", "") not in orphaned_ids
+        ]
+
+        new_len = len(assistant["toolUses"])
+        if new_len == 0:
+            del assistant["toolUses"]
+        elif new_len != original_len:
+            print(f"[ToolPairing] 从 assistant 消息中移除了 {original_len - new_len} 个孤立的 tool_use")
+
+
 def fix_history_alternation(history: List[dict], model_id: str = "claude-sonnet-4") -> List[dict]:
     """修复历史记录，确保 user/assistant 严格交替，并验证 toolUses/toolResults 配对
     
@@ -680,7 +772,11 @@ def convert_anthropic_messages_to_kiro(messages: List[dict], system="", thinking
     
     # 修复历史交替
     history = fix_history_alternation(history)
-    
+
+    # 验证 tool_use↔tool_result 配对（对应 kiro.rs converter.rs 步骤 8-9）
+    current_tool_results, orphaned_tool_use_ids = validate_tool_pairing(history, current_tool_results)
+    remove_orphaned_tool_uses(history, orphaned_tool_use_ids)
+
     return user_content, history, current_tool_results
 
 
@@ -958,7 +1054,11 @@ def convert_openai_messages_to_kiro(
     
     # 修复历史交替
     history = fix_history_alternation(history, model)
-    
+
+    # 验证 tool_use↔tool_result 配对（对应 kiro.rs converter.rs 步骤 8-9）
+    current_tool_results, orphaned_tool_use_ids = validate_tool_pairing(history, current_tool_results)
+    remove_orphaned_tool_uses(history, orphaned_tool_use_ids)
+
     # 转换工具
     kiro_tools = convert_openai_tools_to_kiro(tools) if tools else []
     

@@ -308,7 +308,9 @@ class KiroProvider(BaseProvider):
 
             pos += total_len
 
-        # 检测工具调用 JSON 是否被截断
+        # 检测工具调用 JSON 是否被截断（精细化检测，对应 kiro.rs handlers.rs:1051-1084）
+        from ..core.truncation import detect_truncation, build_soft_failure_result
+
         tool_json_truncated = False
         for tool_id, tool_data in tool_input_buffer.items():
             input_str = tool_data["input"]
@@ -316,7 +318,16 @@ class KiroProvider(BaseProvider):
                 json.loads(input_str)
             except (json.JSONDecodeError, ValueError):
                 tool_json_truncated = True
-                break
+                truncation_info = detect_truncation(
+                    tool_data["name"], tool_data["id"], input_str
+                )
+                if truncation_info:
+                    soft_msg = build_soft_failure_result(truncation_info)
+                    print(
+                        f"[Truncation] tool_use_id={tool_data['id']} "
+                        f"type={truncation_info.truncation_type.value} "
+                        f"检测到工具调用截断: {soft_msg}"
+                    )
 
         # 组装工具调用（即使 JSON 不完整，也保留 raw）
         for tool_id, tool_data in tool_input_buffer.items():
