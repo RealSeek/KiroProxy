@@ -7,6 +7,7 @@ import uuid
 import time
 import secrets
 import httpx
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple
 from fastapi.responses import StreamingResponse
 
@@ -159,6 +160,39 @@ def parse_mcp_search_results(mcp_result: dict) -> List[dict]:
     return results
 
 
+def _convert_page_age(published_date) -> Optional[str]:
+    """将毫秒时间戳转换为人类可读的日期字符串（如 "February 28, 2026"）"""
+    if published_date is None:
+        return None
+    try:
+        ms = int(published_date)
+        dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+        # %B = full month, %d = day (strip leading zero), %Y = year
+        return dt.strftime("%B %d, %Y").replace(" 0", " ")
+    except (ValueError, TypeError, OSError):
+        return None
+
+
+def transform_to_web_search_results(results: List[dict]) -> List[dict]:
+    """将 MCP 搜索结果转换为 Anthropic web_search_result 格式"""
+    transformed = []
+    for r in results:
+        if not isinstance(r, dict):
+            continue
+        page_age = _convert_page_age(
+            r.get("publishedDate") or r.get("published_date")
+        )
+        item = {
+            "type": "web_search_result",
+            "title": r.get("title", r.get("name", "")),
+            "url": r.get("url", r.get("link", "")),
+            "encrypted_content": r.get("snippet", r.get("description", r.get("text", ""))),
+            "page_age": page_age,
+        }
+        transformed.append(item)
+    return transformed
+
+
 def format_search_results_text(results: List[dict]) -> str:
     """将搜索结果格式化为文本摘要"""
     if not results:
@@ -213,8 +247,8 @@ async def handle_web_search_request(
         tool_use_id = generate_tool_use_id()
         input_tokens = _estimate_input_tokens(messages, body.get("system"))
 
-        # 1. message_start
-        yield f'event: message_start\ndata: {{"type":"message_start","message":{{"id":"{msg_id}","type":"message","role":"assistant","content":[],"model":"{model}","stop_reason":null,"stop_sequence":null,"usage":{{"input_tokens":{input_tokens},"output_tokens":0}}}}}}\n\n'
+        # 1. message_start (含 server_tool_use.web_search_requests)
+        yield f'event: message_start\ndata: {{"type":"message_start","message":{{"id":"{msg_id}","type":"message","role":"assistant","content":[],"model":"{model}","stop_reason":null,"stop_sequence":null,"usage":{{"input_tokens":{input_tokens},"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{{"web_search_requests":1}}}}}}}}\n\n'
 
         # 2. content_block_start - server_tool_use (web_search 调用)
         yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":0,"content_block":{{"type":"server_tool_use","id":"{tool_use_id}","name":"web_search"}}}}\n\n'
@@ -231,10 +265,11 @@ async def handle_web_search_request(
 
         if success:
             search_results = parse_mcp_search_results(result)
+            web_results = transform_to_web_search_results(search_results)
             results_text = format_search_results_text(search_results)
 
             # 6. content_block_start - web_search_tool_result
-            yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":1,"content_block":{{"type":"web_search_tool_result","tool_use_id":"{tool_use_id}","content":{json.dumps(search_results)}}}}}\n\n'
+            yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":1,"content_block":{{"type":"web_search_tool_result","tool_use_id":"{tool_use_id}","content":{json.dumps(web_results)}}}}}\n\n'
             yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":1}}\n\n'
 
             # 7. content_block_start - text (AI 总结)
