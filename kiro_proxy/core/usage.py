@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 
-# API 端点
-USAGE_LIMITS_URL = "https://q.us-east-1.amazonaws.com/getUsageLimits"
+# API 端点模板
+USAGE_LIMITS_URL_TEMPLATE = "https://q.{region}.amazonaws.com/getUsageLimits"
 
 # 低余额阈值 (20%)
 LOW_BALANCE_THRESHOLD = 0.2
@@ -31,9 +31,10 @@ class UsageInfo:
     bonus_usage: float = 0.0
 
 
-def build_usage_api_url(auth_method: str, profile_arn: Optional[str] = None) -> str:
+def build_usage_api_url(auth_method: str, profile_arn: Optional[str] = None, region: str = "us-east-1") -> str:
     """构造 API 请求 URL"""
-    url = f"{USAGE_LIMITS_URL}?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST"
+    base_url = USAGE_LIMITS_URL_TEMPLATE.format(region=region)
+    url = f"{base_url}?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST"
     
     # Social 认证需要 profileArn
     if auth_method == "social" and profile_arn:
@@ -121,6 +122,7 @@ async def get_usage_limits(
     profile_arn: Optional[str] = None,
     machine_id: str = "",
     kiro_version: str = "1.0.0",
+    region: str = "us-east-1",
 ) -> Tuple[bool, UsageInfo | dict]:
     """
     获取 Kiro 用量信息
@@ -142,7 +144,7 @@ async def get_usage_limits(
         return False, {"error": "缺少 machine ID"}
     
     # 构造 URL 和请求头
-    url = build_usage_api_url(auth_method, profile_arn)
+    url = build_usage_api_url(auth_method, profile_arn, region)
     headers = build_usage_headers(access_token, machine_id, kiro_version)
     
     try:
@@ -188,4 +190,5 @@ async def get_account_usage(account) -> Tuple[bool, UsageInfo | dict]:
         profile_arn=creds.profile_arn,
         machine_id=account.get_machine_id(),
         kiro_version=get_kiro_version(),
+        region=creds.region or "us-east-1",
     )
