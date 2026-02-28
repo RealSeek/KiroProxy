@@ -16,6 +16,7 @@ import re
 from typing import List, Dict, Any, Tuple, Optional
 
 from .core.history_manager import estimate_tokens_from_text
+from .core.tool_compression import compress_tools_if_needed
 
 # 常量
 MAX_TOOL_DESCRIPTION_LENGTH = 500
@@ -291,7 +292,7 @@ def convert_anthropic_tools_to_kiro(tools: List[dict]) -> List[dict]:
             }
         })
 
-    return kiro_tools
+    return compress_tools_if_needed(kiro_tools)
 
 
 def validate_tool_pairing(
@@ -875,7 +876,7 @@ def convert_openai_tools_to_kiro(tools: List[dict]) -> List[dict]:
             }
         })
 
-    return kiro_tools
+    return compress_tools_if_needed(kiro_tools)
 
 
 def convert_openai_messages_to_kiro(
@@ -1166,7 +1167,7 @@ def convert_gemini_tools_to_kiro(tools: List[dict]) -> List[dict]:
                 }
             })
 
-    return kiro_tools
+    return compress_tools_if_needed(kiro_tools)
 
 
 def convert_gemini_contents_to_kiro(

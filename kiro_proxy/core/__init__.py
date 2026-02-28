@@ -28,6 +28,7 @@ from .compressor import (
     get_compression_config, set_compression_config, update_compression_config,
     compress_and_prepare,
 )
+from .tool_compression import compress_tools_if_needed, TOOL_SIZE_THRESHOLD
 
 __all__ = [
     "state", "ProxyState", "RequestLog", "Account",
@@ -49,4 +50,5 @@ __all__ = [
     "CompressionConfig", "CompressionStats",
     "get_compression_config", "set_compression_config", "update_compression_config",
     "compress_and_prepare",
+    "compress_tools_if_needed", "TOOL_SIZE_THRESHOLD",
 ]
