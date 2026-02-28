@@ -32,6 +32,7 @@ from ..converters import (
     convert_openai_messages_to_kiro,
     extract_images_from_content,
     estimate_output_tokens,
+    count_images_in_messages,
 )
 
 
@@ -121,7 +122,9 @@ async def handle_chat_completions(request: Request):
     if messages:
         last_msg = messages[-1]
         if last_msg.get("role") == "user":
-            _, images = extract_images_from_content(last_msg.get("content", ""))
+            from ..core.image_processor import get_image_config
+            total_image_count = count_images_in_messages(messages)
+            _, images = extract_images_from_content(last_msg.get("content", ""), get_image_config(), total_image_count)
     
     history_chars, user_chars, request_total_chars = history_manager.estimate_request_chars(
         history, user_content

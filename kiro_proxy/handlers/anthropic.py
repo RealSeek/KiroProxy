@@ -30,7 +30,8 @@ from ..converters import (
     convert_kiro_response_to_anthropic,
     estimate_output_tokens,
     extract_images_from_content,
-    extract_thinking_from_content
+    extract_thinking_from_content,
+    count_images_in_messages,
 )
 from .websearch import has_web_search_tool, handle_web_search_request, filter_web_search_tools
 
@@ -233,8 +234,10 @@ async def handle_messages(request: Request):
     if messages:
         last_msg = messages[-1]
         if last_msg.get("role") == "user":
-            _, images = extract_images_from_content(last_msg.get("content", ""))
-    
+            from ..core.image_processor import get_image_config
+            total_image_count = count_images_in_messages(messages)
+            _, images = extract_images_from_content(last_msg.get("content", ""), get_image_config(), total_image_count)
+
     # 构建 Kiro 请求
     kiro_tools = convert_anthropic_tools_to_kiro(tools) if tools else None
 
@@ -996,7 +999,9 @@ async def handle_messages_cc(request: Request):
     if messages:
         last_msg = messages[-1]
         if last_msg.get("role") == "user":
-            _, images = extract_images_from_content(last_msg.get("content", ""))
+            from ..core.image_processor import get_image_config
+            total_image_count = count_images_in_messages(messages)
+            _, images = extract_images_from_content(last_msg.get("content", ""), get_image_config(), total_image_count)
 
     # 构建 Kiro 请求
     kiro_tools = convert_anthropic_tools_to_kiro(tools) if tools else None

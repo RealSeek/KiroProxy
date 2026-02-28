@@ -31,6 +31,10 @@ def get_resource_path(relative_path: str) -> Path:
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时
+    config = load_config()
+    if "image_compression" in config:
+        update_image_config(config["image_compression"])
+        print("[Startup] Loaded image compression config")
     await scheduler.start()
     yield
     # 关闭时
@@ -584,6 +588,7 @@ async def remote_login_page(session_id: str):
 
 from .core import get_history_config, update_history_config, TruncateStrategy
 from .core.rate_limiter import get_rate_limiter
+from .core.image_processor import get_image_config, update_image_config
 
 @app.get("/api/settings/history")
 async def api_get_history_config():
@@ -598,6 +603,27 @@ async def api_update_history_config(request: Request):
     data = await request.json()
     update_history_config(data)
     return {"ok": True, "config": get_history_config().to_dict()}
+
+
+# ==================== 图片压缩配置 API ====================
+
+@app.get("/api/settings/image")
+async def api_get_image_config():
+    """获取图片压缩配置"""
+    config = get_image_config()
+    return config.to_dict()
+
+
+@app.post("/api/settings/image")
+async def api_update_image_config(request: Request):
+    """更新图片压缩配置"""
+    data = await request.json()
+    update_image_config(data)
+    # 持久化保存
+    config = load_config()
+    config["image_compression"] = get_image_config().to_dict()
+    save_config(config)
+    return {"ok": True, "config": get_image_config().to_dict()}
 
 
 # ==================== 限速配置 API ====================

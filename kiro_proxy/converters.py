@@ -73,36 +73,104 @@ def generate_session_id(messages: list) -> str:
     return hashlib.sha256(content.encode()).hexdigest()[:16]
 
 
-def extract_images_from_content(content) -> Tuple[str, List[dict]]:
+def _make_raw_image(data: str, fmt: str) -> dict:
+    """构造原始图片字典（不做任何处理）"""
+    return {"format": fmt, "source": {"bytes": data}}
+
+
+def _process_and_collect_image(data: str, fmt: str, image_config, total_image_count: int) -> List[dict]:
+    """处理单张图片，返回图片列表（GIF 抽帧可能返回多张）
+
+    image_config 为 None 或 enabled=False 时直接透传原始数据。
+    """
+    if image_config is None or not image_config.enabled:
+        return [_make_raw_image(data, fmt)]
+
+    from .core.image_processor import (
+        process_image, process_gif_frames, process_image_to_format,
+    )
+
+    if fmt == "gif":
+        # GIF 三级 fallback 链（对应 kiro.rs converter.rs:474-550）
+        # 1. 尝试抽帧
+        gif_result = process_gif_frames(data, image_config, total_image_count)
+        if gif_result and gif_result.frames:
+            return [
+                {"format": "jpeg", "source": {"bytes": f.data}}
+                for f in gif_result.frames
+            ]
+        # 2. 抽帧失败，尝试转 JPEG（取第一帧）
+        fallback = process_image_to_format(data, "jpeg", image_config, total_image_count)
+        if fallback:
+            print("[ImageProcessor] GIF fallback: converted first frame to JPEG")
+            return [{"format": "jpeg", "source": {"bytes": fallback.data}}]
+        # 3. 全部失败，透传原始数据
+        print("[ImageProcessor] GIF fallback: using original data")
+        return [_make_raw_image(data, fmt)]
+    else:
+        # 静态图处理
+        result = process_image(data, fmt, image_config, total_image_count)
+        if result:
+            out_fmt = "png" if fmt == "gif" else fmt
+            return [{"format": out_fmt, "source": {"bytes": result.data}}]
+        # 处理失败，透传原始数据
+        return [_make_raw_image(data, fmt)]
+
+
+def count_images_in_messages(messages: list) -> int:
+    """统计所有消息中的图片数量"""
+    count = 0
+    for msg in messages:
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    bt = block.get("type", "")
+                    if bt == "image":
+                        count += 1
+                    elif bt == "image_url":
+                        image_url = block.get("image_url", {})
+                        url = image_url.get("url", "")
+                        if url.startswith("data:"):
+                            count += 1
+    return count
+
+
+def extract_images_from_content(content, image_config=None, total_image_count=0) -> Tuple[str, List[dict]]:
     """从消息内容中提取文本和图片
-    
+
+    Args:
+        content: 消息内容（str 或 list）
+        image_config: 图片处理配置，None 或 enabled=False 时透传原始数据
+        total_image_count: 所有消息中的图片总数（用于多图模式判断）
+
     Returns:
         (text_content, images_list)
     """
     if isinstance(content, str):
         return content, []
-    
+
     if not isinstance(content, list):
         return str(content) if content else "", []
-    
+
     text_parts = []
     images = []
-    
+
     for block in content:
         if isinstance(block, str):
             text_parts.append(block)
         elif isinstance(block, dict):
             block_type = block.get("type", "")
-            
+
             if block_type == "text":
                 text_parts.append(block.get("text", ""))
-            
+
             elif block_type == "image":
                 # Anthropic 格式
                 source = block.get("source", {})
                 media_type = source.get("media_type", "image/jpeg")
                 data = source.get("data", "")
-                
+
                 fmt = "jpeg"
                 if "png" in media_type:
                     fmt = "png"
@@ -110,28 +178,24 @@ def extract_images_from_content(content) -> Tuple[str, List[dict]]:
                     fmt = "gif"
                 elif "webp" in media_type:
                     fmt = "webp"
-                
+
                 if data:
-                    images.append({
-                        "format": fmt,
-                        "source": {"bytes": data}
-                    })
-            
+                    processed = _process_and_collect_image(data, fmt, image_config, total_image_count)
+                    images.extend(processed)
+
             elif block_type == "image_url":
                 # OpenAI 格式
                 image_url = block.get("image_url", {})
                 url = image_url.get("url", "")
-                
+
                 if url.startswith("data:"):
                     match = re.match(r'data:image/(\w+);base64,(.+)', url)
                     if match:
                         fmt = match.group(1)
                         data = match.group(2)
-                        images.append({
-                            "format": fmt,
-                            "source": {"bytes": data}
-                        })
-    
+                        processed = _process_and_collect_image(data, fmt, image_config, total_image_count)
+                        images.extend(processed)
+
     return "\n".join(text_parts), images
 
 

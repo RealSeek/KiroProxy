@@ -23,6 +23,23 @@ from ..core.error_handler import classify_error, ErrorType, format_error_log
 from ..core.rate_limiter import get_rate_limiter
 from ..kiro_api import build_headers, build_kiro_request, parse_event_stream, parse_event_stream_full, is_quota_exceeded_error
 from ..converters import estimate_output_tokens, normalize_json_schema
+from ..converters import _process_and_collect_image
+
+
+def _count_images_in_responses_input(input_data) -> int:
+    """统计 Responses API input 中的图片数量"""
+    if not isinstance(input_data, list):
+        return 0
+    count = 0
+    for item in input_data:
+        content_list = item.get("content", [])
+        if isinstance(content_list, list):
+            for c in content_list:
+                if isinstance(c, dict) and c.get("type") == "input_image":
+                    image_url = c.get("image_url", "")
+                    if image_url.startswith("data:"):
+                        count += 1
+    return count
 
 
 def _convert_responses_input_to_kiro(input_data, instructions: str = None):
@@ -93,10 +110,14 @@ def _convert_responses_input_to_kiro(input_data, instructions: str = None):
                                 import re
                                 match = re.match(r'data:image/(\w+);base64,(.+)', image_url)
                                 if match:
-                                    images.append({
-                                        "format": match.group(1),
-                                        "source": {"bytes": match.group(2)}
-                                    })
+                                    from ..core.image_processor import get_image_config
+                                    img_config = get_image_config()
+                                    total_img_count = _count_images_in_responses_input(input_data)
+                                    processed = _process_and_collect_image(
+                                        match.group(2), match.group(1),
+                                        img_config, total_img_count,
+                                    )
+                                    images.extend(processed)
             
             text = "\n".join(text_parts) if text_parts else ""
             
