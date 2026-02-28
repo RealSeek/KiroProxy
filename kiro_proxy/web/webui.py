@@ -366,6 +366,15 @@ HTML_ACCOUNTS = '''
       </select>
     </div>
     <div style="margin-bottom:1rem">
+      <label style="display:block;font-size:0.875rem;color:var(--muted);margin-bottom:0.25rem">区域 (Region)</label>
+      <select id="manualRegion" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text)">
+        <option value="us-east-1">us-east-1（美国东部，默认）</option>
+        <option value="eu-central-1">eu-central-1（欧洲 - 法兰克福）</option>
+        <option value="ap-northeast-1">ap-northeast-1（亚太 - 东京）</option>
+        <option value="ap-southeast-1">ap-southeast-1（亚太 - 新加坡）</option>
+      </select>
+    </div>
+    <div style="margin-bottom:1rem">
       <label style="display:block;font-size:0.875rem;color:var(--muted);margin-bottom:0.25rem">Access Token *</label>
       <textarea id="manualAccessToken" placeholder="粘贴 accessToken..." style="width:100%;height:80px;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text);font-family:monospace;font-size:0.8rem"></textarea>
     </div>
@@ -1372,6 +1381,7 @@ function showManualAdd(){
   $('#manualAddPanel').style.display='block';
   $('#manualName').value='';
   $('#manualAuthMethod').value='social';
+  $('#manualRegion').value='us-east-1';
   $('#manualAccessToken').value='';
   $('#manualRefreshToken').value='';
   $('#manualClientId').value='';
@@ -1391,7 +1401,7 @@ async function submitManualToken(){
   const refreshToken=$('#manualRefreshToken').value.trim();
   if(!accessToken){alert('请输入 Access Token');return;}
 
-  const payload={name,auth_method:authMethod,access_token:accessToken,refresh_token:refreshToken};
+  const payload={name,auth_method:authMethod,region:$('#manualRegion').value,access_token:accessToken,refresh_token:refreshToken};
 
   if(authMethod==='idc'){
     const clientId=$('#manualClientId').value.trim();
