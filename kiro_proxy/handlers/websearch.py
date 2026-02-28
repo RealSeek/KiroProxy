@@ -42,25 +42,37 @@ def get_web_search_tool(tools: List[dict]) -> Optional[dict]:
 
 
 def extract_user_query(messages: List[dict]) -> str:
-    """从消息中提取用户查询"""
+    """从消息中提取用户查询
+
+    读取第一条消息的第一个文本内容块，并去除 "Perform a web search for the query: " 前缀。
+    与 kiro.rs 的 extract_search_query 保持一致。
+    """
     if not messages:
         return ""
 
-    # 获取最后一条用户消息
-    for msg in reversed(messages):
-        if msg.get("role") == "user":
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                return content
-            if isinstance(content, list):
-                text_parts = []
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        text_parts.append(block.get("text", ""))
-                    elif isinstance(block, str):
-                        text_parts.append(block)
-                return " ".join(text_parts)
-    return ""
+    # 获取第一条消息（与 kiro.rs 一致）
+    first_msg = messages[0]
+    content = first_msg.get("content", "")
+
+    text = ""
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        # 获取第一个 text 类型的内容块
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text", "")
+                break
+            elif isinstance(block, str):
+                text = block
+                break
+
+    # 去除 "Perform a web search for the query: " 前缀
+    prefix = "Perform a web search for the query: "
+    if text.startswith(prefix):
+        text = text[len(prefix):]
+
+    return text
 
 
 def _extract_text(content) -> str:
@@ -161,22 +173,34 @@ async def call_mcp_web_search(
 
     mcp_url = MCP_API_URL_TEMPLATE.format(region=region)
 
+    print(f"[WebSearch] MCP URL: {mcp_url}")
+    print(f"[WebSearch] Query: {query}")
+    print(f"[WebSearch] Request ID: {request_id}")
+
     try:
         async with httpx.AsyncClient(verify=False, timeout=60) as client:
             resp = await client.post(mcp_url, json=mcp_request, headers=headers)
 
+            print(f"[WebSearch] MCP response status: {resp.status_code}")
+
             if resp.status_code != 200:
-                return False, {"error": f"MCP API error: {resp.status_code}", "detail": resp.text[:500]}
+                detail = resp.text[:500]
+                print(f"[WebSearch] MCP error response: {detail}")
+                return False, {"error": f"MCP API error: {resp.status_code}", "detail": detail}
 
             result = resp.json()
 
             # 检查 JSON-RPC 错误
             if "error" in result:
-                return False, {"error": result["error"].get("message", "Unknown MCP error")}
+                err_msg = result["error"].get("message", "Unknown MCP error")
+                print(f"[WebSearch] MCP JSON-RPC error: {err_msg}")
+                return False, {"error": err_msg}
 
+            print(f"[WebSearch] MCP success, result keys: {list(result.keys())}")
             return True, result
 
     except Exception as e:
+        print(f"[WebSearch] MCP exception: {e}")
         return False, {"error": str(e)}
 
 
