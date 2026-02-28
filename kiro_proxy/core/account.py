@@ -86,6 +86,13 @@ class Account:
         except Exception:
             return ""
     
+    def get_region(self) -> str:
+        """获取账号所在区域"""
+        creds = self.get_credentials()
+        if creds and creds.region:
+            return creds.region
+        return "us-east-1"
+
     def get_machine_id(self) -> str:
         """获取基于此账号的 Machine ID"""
         if self._machine_id:

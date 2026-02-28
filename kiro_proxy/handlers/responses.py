@@ -10,7 +10,7 @@ import httpx
 from fastapi import Request, HTTPException
 from fastapi.responses import StreamingResponse
 
-from ..config import KIRO_API_URL, map_model_name
+from ..config import map_model_name, get_kiro_api_url
 from ..core import state, is_retryable_error, stats_manager
 from ..core.state import RequestLog
 from ..core.history_manager import (
@@ -424,7 +424,7 @@ async def handle_responses(request: Request):
         req = build_kiro_request(prompt, "claude-haiku-4.5", [])
         try:
             async with httpx.AsyncClient(verify=False, timeout=60) as client:
-                resp = await client.post(KIRO_API_URL, json=req, headers=headers)
+                resp = await client.post(get_kiro_api_url(account.get_region()), json=req, headers=headers)
                 if resp.status_code == 200:
                     return parse_event_stream(resp.content)
         except Exception as e:
@@ -520,7 +520,7 @@ async def handle_responses(request: Request):
     
     # 非流式
     async with httpx.AsyncClient(verify=False, timeout=120) as client:
-        resp = await client.post(KIRO_API_URL, json=kiro_request, headers=headers)
+        resp = await client.post(get_kiro_api_url(account.get_region()), json=kiro_request, headers=headers)
         if resp.status_code != 200:
             raise HTTPException(resp.status_code, resp.text)
         
@@ -594,7 +594,7 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
 
         try:
             async with httpx.AsyncClient(verify=False, timeout=300) as client:
-                async with client.stream("POST", KIRO_API_URL, json=kiro_request, headers=headers) as response:
+                async with client.stream("POST", get_kiro_api_url(account.get_region()), json=kiro_request, headers=headers) as response:
 
                     if response.status_code != 200:
                         error_text = await response.aread()

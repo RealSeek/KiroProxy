@@ -57,21 +57,30 @@ def _debug_usage_log(tag: str, payload: Any) -> None:
 
 class KiroProvider(BaseProvider):
     """Kiro/CodeWhisperer Provider"""
-    
-    API_URL = "https://q.us-east-1.amazonaws.com/generateAssistantResponse"
-    MODELS_URL = "https://q.us-east-1.amazonaws.com/ListAvailableModels"
-    
+
+    API_URL_TEMPLATE = "https://q.{region}.amazonaws.com/generateAssistantResponse"
+    MODELS_URL_TEMPLATE = "https://q.{region}.amazonaws.com/ListAvailableModels"
+
     def __init__(self, credentials: Optional[KiroCredentials] = None):
         self.credentials = credentials
         self._machine_id: Optional[str] = None
-    
+
+    def _get_region(self) -> str:
+        if self.credentials and self.credentials.region:
+            return self.credentials.region
+        return "us-east-1"
+
     @property
     def name(self) -> str:
         return "kiro"
-    
+
     @property
     def api_url(self) -> str:
-        return self.API_URL
+        return self.API_URL_TEMPLATE.format(region=self._get_region())
+
+    @property
+    def models_url(self) -> str:
+        return self.MODELS_URL_TEMPLATE.format(region=self._get_region())
     
     def get_machine_id(self) -> str:
         """获取基于凭证的 Machine ID"""

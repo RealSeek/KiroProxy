@@ -6,6 +6,18 @@ MODELS_URL = "https://q.us-east-1.amazonaws.com/ListAvailableModels"
 MCP_API_URL = "https://q.us-east-1.amazonaws.com/mcp"  # WebSearch MCP 端点
 TOKEN_PATH = Path.home() / ".aws/sso/cache/kiro-auth-token.json"
 
+KIRO_API_URL_TEMPLATE = "https://q.{region}.amazonaws.com/generateAssistantResponse"
+MODELS_URL_TEMPLATE = "https://q.{region}.amazonaws.com/ListAvailableModels"
+MCP_API_URL_TEMPLATE = "https://q.{region}.amazonaws.com/mcp"
+
+
+def get_kiro_api_url(region: str = "us-east-1") -> str:
+    return KIRO_API_URL_TEMPLATE.format(region=region)
+
+
+def get_models_url(region: str = "us-east-1") -> str:
+    return MODELS_URL_TEMPLATE.format(region=region)
+
 # 配额管理配置
 QUOTA_COOLDOWN_SECONDS = 300  # 配额超限冷却时间（秒）
 

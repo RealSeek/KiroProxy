@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from .config import MODELS_URL
+from .config import MODELS_URL_TEMPLATE
 from .core import state, scheduler, stats_manager, client_key_manager
 from .core.admin_auth import find_valid_token, update_token_last_used, hash_token, is_admin_password_configured
 from .core.persistence import load_config, save_config
@@ -210,7 +210,7 @@ async def models():
             "Authorization": f"Bearer {token}",
         }
         async with httpx.AsyncClient(verify=False, timeout=30) as client:
-            resp = await client.get(MODELS_URL, headers=headers, params={"origin": "AI_EDITOR"})
+            resp = await client.get(MODELS_URL_TEMPLATE.format(region=account.get_region()), headers=headers, params={"origin": "AI_EDITOR"})
             if resp.status_code == 200:
                 data = resp.json()
                 return {

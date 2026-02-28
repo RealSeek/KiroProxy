@@ -7,7 +7,7 @@ import httpx
 from fastapi import Request, HTTPException
 from fastapi.responses import StreamingResponse
 
-from ..config import KIRO_API_URL, map_model_name
+from ..config import map_model_name, get_kiro_api_url
 from ..core import state, RetryableRequest, is_retryable_error, stats_manager, flow_monitor, TokenUsage
 from ..core.state import RequestLog
 from ..core.history_manager import (
@@ -115,7 +115,7 @@ async def _call_kiro_for_summary(prompt: str, account, headers: dict) -> str:
     kiro_request = build_kiro_request(prompt, "claude-haiku-4.5", [])  # 用快速模型生成摘要
     try:
         async with httpx.AsyncClient(verify=False, timeout=60) as client:
-            resp = await client.post(KIRO_API_URL, json=kiro_request, headers=headers)
+            resp = await client.post(get_kiro_api_url(account.get_region()), json=kiro_request, headers=headers)
             if resp.status_code == 200:
                 return parse_event_stream(resp.content)
     except Exception as e:
@@ -307,8 +307,8 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
         while retry_count <= max_retries:
             try:
                 async with httpx.AsyncClient(verify=False, timeout=300) as client:
-                    async with client.stream("POST", KIRO_API_URL, json=kiro_request, headers=headers) as response:
-                        
+                    async with client.stream("POST", get_kiro_api_url(current_account.get_region()), json=kiro_request, headers=headers) as response:
+
                         # 处理配额超限
                         if response.status_code == 429 or is_quota_exceeded_error(response.status_code, ""):
                             current_account.mark_quota_exceeded("Rate limited (stream)")
@@ -735,7 +735,7 @@ async def _handle_non_stream(kiro_request, headers, account, model, log_id, star
     for retry in range(max_retries + 1):
         try:
             async with httpx.AsyncClient(verify=False, timeout=300) as client:
-                response = await client.post(KIRO_API_URL, json=kiro_request, headers=headers)
+                response = await client.post(get_kiro_api_url(current_account.get_region()), json=kiro_request, headers=headers)
                 status_code = response.status_code
 
                 # 处理配额超限
@@ -1088,7 +1088,7 @@ async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start
                             if not should_stop_ping:
                                 yield 'event: ping\ndata: {"type": "ping"}\n\n'
 
-                    async with client.stream("POST", KIRO_API_URL, json=kiro_request, headers=headers) as response:
+                    async with client.stream("POST", get_kiro_api_url(current_account.get_region()), json=kiro_request, headers=headers) as response:
 
                         # 处理配额超限
                         if response.status_code == 429 or is_quota_exceeded_error(response.status_code, ""):
@@ -1355,7 +1355,7 @@ async def _handle_non_stream_cc(kiro_request, headers, account, model, log_id, s
     for retry in range(max_retries + 1):
         try:
             async with httpx.AsyncClient(verify=False, timeout=300) as client:
-                response = await client.post(KIRO_API_URL, json=kiro_request, headers=headers)
+                response = await client.post(get_kiro_api_url(current_account.get_region()), json=kiro_request, headers=headers)
                 status_code = response.status_code
 
                 # 处理配额超限

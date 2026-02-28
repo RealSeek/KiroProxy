@@ -7,7 +7,7 @@ import asyncio
 import httpx
 from fastapi import Request, HTTPException
 
-from ..config import KIRO_API_URL, map_model_name
+from ..config import map_model_name, get_kiro_api_url
 from ..core import state, is_retryable_error
 from ..core.state import RequestLog
 from ..core.history_manager import (
@@ -82,7 +82,7 @@ async def handle_generate_content(model_name: str, request: Request):
         req = build_kiro_request(prompt, "claude-haiku-4.5", [])
         try:
             async with httpx.AsyncClient(verify=False, timeout=60) as client:
-                resp = await client.post(KIRO_API_URL, json=req, headers=headers)
+                resp = await client.post(get_kiro_api_url(account.get_region()), json=req, headers=headers)
                 if resp.status_code == 200:
                     return parse_event_stream(resp.content)
         except Exception as e:
@@ -106,7 +106,7 @@ async def handle_generate_content(model_name: str, request: Request):
         req = build_kiro_request(prompt, "claude-haiku-4.5", [])
         try:
             async with httpx.AsyncClient(verify=False, timeout=60) as client:
-                resp = await client.post(KIRO_API_URL, json=req, headers=headers)
+                resp = await client.post(get_kiro_api_url(account.get_region()), json=req, headers=headers)
                 if resp.status_code == 200:
                     return parse_event_stream(resp.content)
         except Exception as e:
@@ -162,7 +162,7 @@ async def handle_generate_content(model_name: str, request: Request):
     for retry in range(max_retries + 1):
         try:
             async with httpx.AsyncClient(verify=False, timeout=120) as client:
-                resp = await client.post(KIRO_API_URL, json=kiro_request, headers=headers)
+                resp = await client.post(get_kiro_api_url(current_account.get_region()), json=kiro_request, headers=headers)
                 status_code = resp.status_code
                 
                 # 处理配额超限

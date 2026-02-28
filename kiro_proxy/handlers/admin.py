@@ -8,7 +8,7 @@ from datetime import datetime
 from dataclasses import asdict
 from fastapi import Request, HTTPException, Query
 
-from ..config import TOKEN_PATH, MODELS_URL
+from ..config import TOKEN_PATH, MODELS_URL_TEMPLATE
 from ..core import state, Account, stats_manager, get_browsers_info, open_url, flow_monitor, get_account_usage
 from ..credential import quota_manager, generate_machine_id, get_kiro_version, CredentialStatus
 from ..auth import start_device_flow, poll_device_flow, cancel_device_flow, get_login_state, save_credentials_to_file
@@ -186,7 +186,7 @@ async def speedtest():
             "Authorization": f"Bearer {token}",
         }
         async with httpx.AsyncClient(verify=False, timeout=10) as client:
-            resp = await client.get(MODELS_URL, headers=headers, params={"origin": "AI_EDITOR"})
+            resp = await client.get(MODELS_URL_TEMPLATE.format(region=account.get_region()), headers=headers, params={"origin": "AI_EDITOR"})
             latency = (time.time() - start) * 1000
             result = {
                 "ok": resp.status_code == 200,
@@ -422,7 +422,7 @@ async def run_health_check():
             
             async with httpx.AsyncClient(verify=False, timeout=10) as client:
                 resp = await client.get(
-                    MODELS_URL,
+                    MODELS_URL_TEMPLATE.format(region=acc.get_region()),
                     headers=headers,
                     params={"origin": "AI_EDITOR"}
                 )

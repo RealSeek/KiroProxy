@@ -81,7 +81,7 @@ class BackgroundScheduler:
     async def _health_check(self, state):
         """健康检查"""
         import httpx
-        from ..config import MODELS_URL
+        from ..config import MODELS_URL_TEMPLATE
         from ..credential import CredentialStatus
         
         for acc in state.accounts:
@@ -101,7 +101,7 @@ class BackgroundScheduler:
                 
                 async with httpx.AsyncClient(verify=False, timeout=10) as client:
                     resp = await client.get(
-                        MODELS_URL, 
+                        MODELS_URL_TEMPLATE.format(region=acc.get_region()),
                         headers=headers,
                         params={"origin": "AI_EDITOR"}
                     )
