@@ -243,32 +243,39 @@ def smart_truncate_by_lines(text: str, max_chars: int, head_lines: int, tail_lin
     return result, max(0, saved)
 
 
-def compress_tool_results_pass(state: dict, max_chars: int, head_lines: int, tail_lines: int) -> int:
-    """截断 toolResults 中的 text（对应 compressor.rs:compress_tool_results_pass）"""
-    saved = 0
+def compress_tool_results_pass(
+    state: dict, max_chars: int, head_lines: int, tail_lines: int,
+    current_max_chars: int = 0,
+) -> int:
+    """截断 toolResults 中的 text（对应 compressor.rs:compress_tool_results_pass）
 
-    def _process_tool_results(tool_results):
+    current_max_chars: currentMessage 专用阈值，0 表示与 max_chars 相同。
+    """
+    saved = 0
+    effective_current = current_max_chars if current_max_chars > 0 else max_chars
+
+    def _process_tool_results(tool_results, limit):
         nonlocal saved
         if not tool_results:
             return
         for tr in tool_results:
             for content_item in tr.get("content", []):
                 text = content_item.get("text", "")
-                if text and len(text) > max_chars:
-                    truncated, s = smart_truncate_by_lines(text, max_chars, head_lines, tail_lines)
+                if text and len(text) > limit:
+                    truncated, s = smart_truncate_by_lines(text, limit, head_lines, tail_lines)
                     content_item["text"] = truncated
                     saved += s
 
-    # history
+    # history — 使用 max_chars
     for msg in state.get("history", []):
         if "userInputMessage" in msg:
             ctx = msg["userInputMessage"].get("userInputMessageContext", {})
-            _process_tool_results(ctx.get("toolResults"))
+            _process_tool_results(ctx.get("toolResults"), max_chars)
 
-    # currentMessage
+    # currentMessage — 使用 effective_current
     cm = state.get("currentMessage", {}).get("userInputMessage", {})
     ctx = cm.get("userInputMessageContext", {})
-    _process_tool_results(ctx.get("toolResults"))
+    _process_tool_results(ctx.get("toolResults"), effective_current)
 
     return saved
 
@@ -449,8 +456,11 @@ def repair_tool_pairing_pass(state: dict) -> Tuple[int, int]:
 
 # ==================== 压缩入口 ====================
 
-def compress(state: dict, config: CompressionConfig) -> CompressionStats:
-    """执行 5 层渐进式压缩 + 工具配对修复（对应 compressor.rs:compress）"""
+def compress(state: dict, config: CompressionConfig, current_tool_result_max_chars: int = 0) -> CompressionStats:
+    """执行 5 层渐进式压缩 + 工具配对修复（对应 compressor.rs:compress）
+
+    current_tool_result_max_chars: currentMessage tool_result 专用阈值，0 表示与 config 相同。
+    """
     stats = CompressionStats()
 
     if not config.enabled:
@@ -468,7 +478,8 @@ def compress(state: dict, config: CompressionConfig) -> CompressionStats:
     if config.tool_result_max_chars > 0:
         stats.tool_result_saved = compress_tool_results_pass(
             state, config.tool_result_max_chars,
-            config.tool_result_head_lines, config.tool_result_tail_lines
+            config.tool_result_head_lines, config.tool_result_tail_lines,
+            current_max_chars=current_tool_result_max_chars,
         )
 
     # Layer 4: Tool Use Input 截断
@@ -537,6 +548,10 @@ ADAPTIVE_MIN_TOOL_USE_INPUT_MAX_CHARS = 256
 ADAPTIVE_HISTORY_PRESERVE_MESSAGES = 2
 ADAPTIVE_MIN_MESSAGE_CONTENT_MAX_CHARS = 8192
 
+# currentMessage tool_result 分离阈值
+ADAPTIVE_MIN_CURRENT_TOOL_RESULT_SOFT = 4000   # 软下限：L5 不低于此值
+ADAPTIVE_MIN_CURRENT_TOOL_RESULT_HARD = 512    # 硬下限：L6 紧急兜底
+
 
 @dataclass
 class AdaptiveOutcome:
@@ -547,19 +562,25 @@ class AdaptiveOutcome:
     final_tool_result_max_chars: int = 0
     final_tool_use_input_max_chars: int = 0
     final_message_content_max_chars: int = 0
+    final_current_tool_result_max_chars: int = 0
     history_messages_removed: int = 0
 
 
-def _has_tool_results_or_tools(state: dict) -> bool:
-    """检查 state 中是否有 toolResults 或 tools"""
+def _has_history_tool_results(state: dict) -> bool:
+    """检查 history 中是否有 toolResults（不含 tools，修复空转 bug）"""
     for msg in state.get("history", []):
         if "userInputMessage" in msg:
             ctx = msg["userInputMessage"].get("userInputMessageContext", {})
-            if ctx.get("toolResults") or ctx.get("tools"):
+            if ctx.get("toolResults"):
                 return True
+    return False
+
+
+def _has_current_tool_results(state: dict) -> bool:
+    """检查 currentMessage 中是否有 toolResults"""
     cm = state.get("currentMessage", {}).get("userInputMessage", {})
     ctx = cm.get("userInputMessageContext", {})
-    return bool(ctx.get("toolResults") or ctx.get("tools"))
+    return bool(ctx.get("toolResults"))
 
 
 def _has_tool_uses(state: dict) -> bool:
@@ -607,8 +628,13 @@ def adaptive_shrink_request_body(
 ) -> Tuple[str, Optional[AdaptiveOutcome]]:
     """自适应缩减请求体（对应 handlers.rs:adaptive_shrink_request_body）
 
-    严格对齐 Rust 实现：4 层互斥（if/elif/else），每次迭代只执行一层。
-    使用 adaptive_config 副本，循环末尾用 adaptive_config 重新压缩。
+    6 层优先级：
+      L1: 缩减 history tool_result_max_chars（下限 512）
+      L2: 缩减 tool_use_input_max_chars（下限 256）
+      L3: 截断超长用户消息
+      L4: 移除最老历史消息
+      L5: 缩减 current tool_result_max_chars 到软下限（4000）
+      L6: 缩减 current tool_result_max_chars 到硬下限（512，紧急兜底）
     """
     state = kiro_request.get("conversationState", {})
 
@@ -626,9 +652,13 @@ def adaptive_shrink_request_body(
     # 创建 adaptive_config 副本（与 Rust adaptive_config = base_config.clone() 一致）
     adaptive_config = CompressionConfig.from_dict(base_config.to_dict())
 
-    # 预扫描
-    has_tr = _has_tool_results_or_tools(state)
+    # 预扫描：分离检查 history 和 currentMessage 的 toolResults
+    has_history_tr = _has_history_tool_results(state)
+    has_current_tr = _has_current_tool_results(state)
     has_tu = _has_tool_uses(state)
+
+    # currentMessage tool_result 专用阈值，初始等于 base_config
+    current_tool_result_max_chars = base_config.tool_result_max_chars
 
     # 扫描最大 user content 字符数，计算初始 message_content_max_chars
     max_content_chars = _max_user_message_chars(state)
@@ -640,29 +670,28 @@ def adaptive_shrink_request_body(
 
         changed = False
 
-        # 4 层互斥：if / elif / else { if / elif }（与 Rust 完全一致）
-        if has_tr and adaptive_config.tool_result_max_chars > ADAPTIVE_MIN_TOOL_RESULT_MAX_CHARS:
-            # L1: 缩减 tool_result_max_chars
+        # L1: 缩减 history tool_result_max_chars（仅检查 history 有 toolResults）
+        if has_history_tr and adaptive_config.tool_result_max_chars > ADAPTIVE_MIN_TOOL_RESULT_MAX_CHARS:
             next_val = max(adaptive_config.tool_result_max_chars * 3 // 4, ADAPTIVE_MIN_TOOL_RESULT_MAX_CHARS)
             if next_val < adaptive_config.tool_result_max_chars:
                 adaptive_config.tool_result_max_chars = next_val
                 changed = True
 
+        # L2: 缩减 tool_use_input_max_chars
         elif has_tu and adaptive_config.tool_use_input_max_chars > ADAPTIVE_MIN_TOOL_USE_INPUT_MAX_CHARS:
-            # L2: 缩减 tool_use_input_max_chars
             next_val = max(adaptive_config.tool_use_input_max_chars * 3 // 4, ADAPTIVE_MIN_TOOL_USE_INPUT_MAX_CHARS)
             if next_val < adaptive_config.tool_use_input_max_chars:
                 adaptive_config.tool_use_input_max_chars = next_val
                 changed = True
 
         else:
-            # L3 或 L4（互斥）
+            # L3 / L4（互斥）
             max_single_bytes = _max_user_message_bytes(state)
             history = state.get("history", [])
 
             if ((max_single_bytes > max_body or len(history) <= ADAPTIVE_HISTORY_PRESERVE_MESSAGES + 2)
                     and message_content_max >= ADAPTIVE_MIN_MESSAGE_CONTENT_MAX_CHARS):
-                # L3: 截断超长用户消息（先截断后递减，与 Rust 一致）
+                # L3: 截断超长用户消息
                 saved = compress_long_messages_pass(state, message_content_max)
                 if saved > 0:
                     changed = True
@@ -682,11 +711,27 @@ def adaptive_shrink_request_body(
                     changed = True
                 state["history"] = history
 
+            # L5/L6: L3/L4 未能产生变更时，才压缩 currentMessage tool_result
+            if not changed:
+                if has_current_tr and current_tool_result_max_chars > ADAPTIVE_MIN_CURRENT_TOOL_RESULT_SOFT:
+                    # L5: 缩减 current tool_result_max_chars 到软下限
+                    next_val = max(current_tool_result_max_chars * 3 // 4, ADAPTIVE_MIN_CURRENT_TOOL_RESULT_SOFT)
+                    if next_val < current_tool_result_max_chars:
+                        current_tool_result_max_chars = next_val
+                        changed = True
+
+                elif has_current_tr and current_tool_result_max_chars > ADAPTIVE_MIN_CURRENT_TOOL_RESULT_HARD:
+                    # L6: 缩减 current tool_result_max_chars 到硬下限（紧急兜底）
+                    next_val = max(current_tool_result_max_chars * 3 // 4, ADAPTIVE_MIN_CURRENT_TOOL_RESULT_HARD)
+                    if next_val < current_tool_result_max_chars:
+                        current_tool_result_max_chars = next_val
+                        changed = True
+
         if not changed:
             break
 
-        # 用 adaptive_config 重新压缩 + 序列化（与 Rust 一致）
-        compress(state, adaptive_config)
+        # 用 adaptive_config 重新压缩 + 序列化，传入分离阈值
+        compress(state, adaptive_config, current_tool_result_max_chars=current_tool_result_max_chars)
         body = json.dumps(kiro_request, ensure_ascii=False)
         body_bytes = len(body.encode("utf-8"))
         outcome.iterations = iteration + 1
@@ -697,6 +742,7 @@ def adaptive_shrink_request_body(
 
     outcome.final_tool_result_max_chars = adaptive_config.tool_result_max_chars
     outcome.final_tool_use_input_max_chars = adaptive_config.tool_use_input_max_chars
+    outcome.final_current_tool_result_max_chars = current_tool_result_max_chars
 
     return body, outcome
 
@@ -735,6 +781,7 @@ def compress_and_prepare(kiro_request: dict, config: CompressionConfig) -> str:
             f"[Compressor] Adaptive shrink: {outcome.iterations} iters, "
             f"{outcome.initial_bytes} -> {outcome.final_bytes} bytes, "
             f"tool_result_max={outcome.final_tool_result_max_chars}, "
+            f"current_tool_result_max={outcome.final_current_tool_result_max_chars}, "
             f"tool_use_input_max={outcome.final_tool_use_input_max_chars}, "
             f"msg_content_max={outcome.final_message_content_max_chars}, "
             f"history_removed={outcome.history_messages_removed}"
