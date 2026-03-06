@@ -171,6 +171,51 @@ class KiroProvider(BaseProvider):
     # 上下文窗口大小（200k tokens）
     CONTEXT_WINDOW_SIZE = 200_000
 
+    @staticmethod
+    def _try_repair_overlap(input_str: str, boundaries: list) -> str:
+        """Attempt to repair JSON corrupted by fragment overlap at known boundaries.
+
+        Only checks for duplicate content at recorded append boundary positions,
+        eliminating false positives from coincidental repeated content elsewhere.
+        Each candidate is validated with json.loads() before acceptance.
+        Selects the candidate with the largest overlap across all boundaries.
+
+        Args:
+            input_str: The assembled (possibly corrupted) tool input string.
+            boundaries: List of positions where fragments were concatenated.
+        """
+        if not boundaries or len(input_str) < 4:
+            return input_str
+
+        best_candidate = None
+        best_overlap = 0
+
+        for boundary in boundaries:
+            if boundary <= 0 or boundary >= len(input_str):
+                continue
+
+            # At this boundary, check if content before and after overlaps
+            # Max overlap to check: up to 500 chars on each side of boundary
+            max_overlap = min(boundary, len(input_str) - boundary, 500)
+
+            for overlap_len in range(max_overlap, 1, -1):
+                before = input_str[boundary - overlap_len:boundary]
+                after = input_str[boundary:boundary + overlap_len]
+                if before == after:
+                    # Found duplicate at boundary, try removing it
+                    candidate = input_str[:boundary] + input_str[boundary + overlap_len:]
+                    try:
+                        json.loads(candidate)
+                        # Keep the candidate with the largest overlap
+                        if overlap_len > best_overlap:
+                            best_overlap = overlap_len
+                            best_candidate = candidate
+                        break  # Largest valid overlap at this boundary found
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+
+        return best_candidate or input_str
+
     def parse_response(self, raw: bytes) -> Dict[str, Any]:
         """解析 AWS event-stream 格式响应"""
         result = {
@@ -281,7 +326,8 @@ class KiroProvider(BaseProvider):
                                 tool_input_buffer[tool_id] = {
                                     "id": tool_id,
                                     "name": tool_name,
-                                    "input": ""
+                                    "input": "",
+                                    "boundaries": []  # Record append boundary positions
                                 }
                             if tool_name and not tool_input_buffer[tool_id]["name"]:
                                 tool_input_buffer[tool_id]["name"] = tool_name
@@ -292,10 +338,13 @@ class KiroProvider(BaseProvider):
                                 elif tool_input.startswith(current_input):
                                     # Handle cumulative tool input by replacing with the newest payload.
                                     tool_input_buffer[tool_id]["input"] = tool_input
+                                    tool_input_buffer[tool_id]["boundaries"].clear()  # Reset: old boundaries are invalid
                                 elif current_input.startswith(tool_input):
                                     # Ignore shorter duplicates.
                                     pass
                                 else:
+                                    # Record the append boundary position
+                                    tool_input_buffer[tool_id]["boundaries"].append(len(current_input))
                                     tool_input_buffer[tool_id]["input"] = current_input + tool_input
 
                     # 解析 exception 事件（如 ContentLengthExceededException）
@@ -308,13 +357,22 @@ class KiroProvider(BaseProvider):
 
             pos += total_len
 
-        # 检测工具调用 JSON 是否被截断
+        # 检测工具调用 JSON 是否被截断，并尝试边界感知的重叠修复
         tool_json_truncated = False
         for tool_id, tool_data in tool_input_buffer.items():
             input_str = tool_data["input"]
             try:
                 json.loads(input_str)
             except (json.JSONDecodeError, ValueError):
+                # JSON 解析失败，尝试在已知片段边界处修复重叠
+                boundaries = tool_data.get("boundaries", [])
+                if boundaries:
+                    repaired = self._try_repair_overlap(input_str, boundaries)
+                    if repaired != input_str:
+                        logger.debug(f"Tool input overlap repaired for tool {tool_data['name']} "
+                                     f"(original {len(input_str)} -> repaired {len(repaired)} chars)")
+                        tool_data["input"] = repaired
+                        continue  # 修复成功，跳过 truncated 标记
                 tool_json_truncated = True
                 break
 
