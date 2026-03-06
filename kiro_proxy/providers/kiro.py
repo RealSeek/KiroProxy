@@ -2,6 +2,7 @@
 import json
 import os
 import uuid
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 from .base import BaseProvider
@@ -53,6 +54,69 @@ def _debug_usage_log(tag: str, payload: Any) -> None:
         return
     text = _truncate_debug_payload(payload, _DEBUG_USAGE_MAX_CHARS)
     print(f"[Kiro][UsageDebug] {tag}: {text}")
+
+
+def _coerce_line_number(value: Any) -> Optional[int]:
+    try:
+        line = int(value)
+    except (TypeError, ValueError):
+        return None
+    return line if line > 0 else None
+
+
+def _extract_old_string_from_range(file_path: str, start_line: Any, end_line: Any) -> Optional[str]:
+    start = _coerce_line_number(start_line)
+    end = _coerce_line_number(end_line)
+    if start is None or end is None or end < start:
+        return None
+
+    try:
+        path = Path(file_path)
+        raw = path.read_bytes()
+        text = raw.decode("utf-8", errors="surrogateescape")
+    except Exception:
+        return None
+
+    lines = text.splitlines(keepends=True)
+    if start > len(lines) or end > len(lines):
+        return None
+
+    return "".join(lines[start - 1:end])
+
+
+def _normalize_tool_input(tool_name: str, tool_input: Any) -> Any:
+    if tool_name != "Edit" or not isinstance(tool_input, dict):
+        return tool_input
+
+    normalized = dict(tool_input)
+
+    if "file_path" not in normalized:
+        for alias in ("path", "filePath"):
+            if isinstance(normalized.get(alias), str) and normalized[alias]:
+                normalized["file_path"] = normalized[alias]
+                break
+
+    if "new_string" not in normalized:
+        for alias in ("new_str", "newText", "replacement"):
+            if alias in normalized:
+                normalized["new_string"] = normalized[alias]
+                break
+
+    if "old_string" not in normalized:
+        file_path = normalized.get("file_path")
+        if isinstance(file_path, str) and file_path:
+            old_string = _extract_old_string_from_range(
+                file_path,
+                normalized.get("start_line"),
+                normalized.get("end_line"),
+            )
+            if old_string is not None:
+                normalized["old_string"] = old_string
+
+    for redundant_key in ("new_str", "newText", "replacement", "start_line", "end_line"):
+        normalized.pop(redundant_key, None)
+
+    return normalized
 
 
 class KiroProvider(BaseProvider):
@@ -383,6 +447,8 @@ class KiroProvider(BaseProvider):
                 input_json = json.loads(input_str)
             except:
                 input_json = {"raw": input_str}
+
+            input_json = _normalize_tool_input(tool_data["name"], input_json)
 
             result["tool_uses"].append({
                 "type": "tool_use",

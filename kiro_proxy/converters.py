@@ -24,7 +24,7 @@ MAX_TOOL_DESCRIPTION_LENGTH = 500
 WRITE_TOOL_DESCRIPTION_SUFFIX = "- IMPORTANT: If the content to write exceeds 150 lines, you MUST only write the first 50 lines using this tool, then use `Edit` tool to append the remaining content in chunks of no more than 50 lines each. If needed, leave a unique placeholder to help append content. Do NOT attempt to write all content at once."
 
 # 追加到 Edit 工具 description 末尾的内容
-EDIT_TOOL_DESCRIPTION_SUFFIX = "- IMPORTANT: If the `new_string` content exceeds 50 lines, you MUST split it into multiple Edit calls, each replacing no more than 50 lines at a time. If used to append content, leave a unique placeholder to help append content. On the final chunk, do NOT include the placeholder."
+EDIT_TOOL_DESCRIPTION_SUFFIX = "- IMPORTANT: Use the exact Edit input fields `file_path`, `old_string`, and `new_string`. Never use line-based fields like `start_line` or `end_line`, and never use aliases like `new_str`. If the `new_string` content exceeds 50 lines, you MUST split it into multiple Edit calls, each replacing no more than 50 lines at a time. If used to append content, leave a unique placeholder to help append content. On the final chunk, do NOT include the placeholder."
 
 # 追加到系统提示词的分块写入策略
 SYSTEM_CHUNKED_POLICY = (
