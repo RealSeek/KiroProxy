@@ -545,7 +545,7 @@ async def handle_responses(request: Request):
         if resp.status_code != 200:
             raise HTTPException(resp.status_code, resp.text)
         
-        result = parse_event_stream_full(resp.content)
+        result = parse_event_stream_full(resp.content, model=model)
         input_tokens = result.get("input_tokens") or 0
         if input_tokens > 0 and request_total_chars > 0:
             update_chars_per_token(request_total_chars, input_tokens)
@@ -692,7 +692,7 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                             })
                     
                     # 解析完整响应获取工具调用
-                    result = parse_event_stream_full(full_response)
+                    result = parse_event_stream_full(full_response, model=model)
                     input_tokens = result.get("input_tokens") or 0
                     if input_tokens > 0 and request_total_chars > 0:
                         update_chars_per_token(request_total_chars, input_tokens)

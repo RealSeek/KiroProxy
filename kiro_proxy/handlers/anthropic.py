@@ -23,6 +23,7 @@ from ..core.error_handler import classify_error, ErrorType, format_error_log
 from ..core.rate_limiter import get_rate_limiter
 from ..credential import quota_manager
 from ..kiro_api import build_headers, build_kiro_request, parse_event_stream_full, parse_event_stream, is_quota_exceeded_error
+from ..config import get_context_window_size
 from ..converters import (
     generate_session_id,
     convert_anthropic_tools_to_kiro,
@@ -590,7 +591,7 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                                 pass
 
                         # 流结束后处理
-                        result = parse_event_stream_full(full_response)
+                        result = parse_event_stream_full(full_response, model=model)
                         is_only_thinking = result.get("only_thinking", False)
 
                         if phase == "buffering":
@@ -809,7 +810,7 @@ async def _handle_non_stream(kiro_request, headers, account, model, log_id, star
                         flow_monitor.fail_flow(flow_id, error_type, error_message, status, error_msg)
                     raise HTTPException(status, error_message)
 
-                result = parse_event_stream_full(response.content)
+                result = parse_event_stream_full(response.content, model=model)
                 input_tokens = result.get("input_tokens") or 0
                 if history_manager and input_tokens > 0:
                     _, _, total_chars = history_manager.estimate_request_chars(
@@ -898,7 +899,6 @@ async def _handle_non_stream(kiro_request, headers, account, model, log_id, star
 # /cc/v1/messages - 流式响应会等待 contextUsageEvent 后再发送 message_start
 # message_start 中的 input_tokens 是从 contextUsageEvent 计算的准确值
 
-CONTEXT_WINDOW_SIZE = 200_000  # 上下文窗口大小（200k tokens）
 PING_INTERVAL_SECS = 25  # Ping 保活间隔
 
 
@@ -1153,7 +1153,7 @@ async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start
                                 # 估算 input_tokens（基于字符数，约 4 字符/token）
                                 estimated_input_tokens = estimate_tokens_from_chars(total_chars)
                                 # 确保接近上下文窗口限制，触发压缩
-                                estimated_input_tokens = max(estimated_input_tokens, CONTEXT_WINDOW_SIZE - 1000)
+                                estimated_input_tokens = max(estimated_input_tokens, get_context_window_size(model) - 1000)
 
                                 msg_id = f"msg_{log_id}"
 
@@ -1202,7 +1202,7 @@ async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start
                                 last_ping_time = current_time
 
                         # 解析完整响应
-                        result = parse_event_stream_full(full_response)
+                        result = parse_event_stream_full(full_response, model=model)
                         full_content = "".join(result.get("content", []))
 
                         # 获取从 contextUsageEvent 计算的 input_tokens
@@ -1408,7 +1408,7 @@ async def _handle_non_stream_cc(kiro_request, headers, account, model, log_id, s
                         )
                         # 估算 input_tokens
                         estimated_input_tokens = estimate_tokens_from_chars(total_chars)
-                        estimated_input_tokens = max(estimated_input_tokens, CONTEXT_WINDOW_SIZE - 1000)
+                        estimated_input_tokens = max(estimated_input_tokens, get_context_window_size(model) - 1000)
 
                         if flow_id:
                             flow_monitor.complete_flow(
@@ -1439,7 +1439,7 @@ async def _handle_non_stream_cc(kiro_request, headers, account, model, log_id, s
                         flow_monitor.fail_flow(flow_id, error_type, error_message, status, error_msg)
                     raise HTTPException(status, error_message)
 
-                result = parse_event_stream_full(response.content)
+                result = parse_event_stream_full(response.content, model=model)
                 current_account.request_count += 1
                 current_account.last_used = time.time()
                 get_rate_limiter().record_request(current_account.id)

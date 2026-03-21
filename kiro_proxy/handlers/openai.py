@@ -233,7 +233,7 @@ async def handle_chat_completions(request: Request):
                     
                     raise HTTPException(resp.status_code, error.user_message)
                 
-                result = parse_event_stream_full(resp.content)
+                result = parse_event_stream_full(resp.content, model=model)
                 content = "".join(result.get("content", []))
                 input_tokens = result.get("input_tokens") or 0
                 if input_tokens > 0 and request_total_chars > 0:

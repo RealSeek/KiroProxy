@@ -232,8 +232,8 @@ class KiroProvider(BaseProvider):
             }
         }
     
-    # 上下文窗口大小（200k tokens）
-    CONTEXT_WINDOW_SIZE = 200_000
+    # 默认上下文窗口大小（200k tokens），4.6 系列为 1M
+    DEFAULT_CONTEXT_WINDOW_SIZE = 200_000
 
     @staticmethod
     def _try_repair_overlap(input_str: str, boundaries: list) -> str:
@@ -280,7 +280,7 @@ class KiroProvider(BaseProvider):
 
         return best_candidate or input_str
 
-    def parse_response(self, raw: bytes) -> Dict[str, Any]:
+    def parse_response(self, raw: bytes, model: str = "") -> Dict[str, Any]:
         """解析 AWS event-stream 格式响应"""
         result = {
             "content": [],
@@ -374,8 +374,10 @@ class KiroProvider(BaseProvider):
                         if 'contextUsagePercentage' in ctx_event:
                             percentage = ctx_event['contextUsagePercentage']
                             result["context_usage_percentage"] = percentage
-                            # 计算实际 input_tokens: percentage * 200000 / 100
-                            result["input_tokens"] = int(percentage * self.CONTEXT_WINDOW_SIZE / 100)
+                            # 计算实际 input_tokens: percentage * context_window / 100
+                            from ..config import get_context_window_size
+                            context_window = get_context_window_size(model) if model else self.DEFAULT_CONTEXT_WINDOW_SIZE
+                            result["input_tokens"] = int(percentage * context_window / 100)
                             # 上下文使用量达到 100% 时标记
                             if percentage >= 100:
                                 context_window_exceeded = True

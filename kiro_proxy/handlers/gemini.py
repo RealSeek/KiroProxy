@@ -243,7 +243,7 @@ async def handle_generate_content(model_name: str, request: Request):
                     raise HTTPException(resp.status_code, error.user_message)
                 
                 # 使用完整解析以支持工具调用
-                result = parse_event_stream_full(resp.content)
+                result = parse_event_stream_full(resp.content, model=model)
                 input_tokens = result.get("input_tokens") or 0
                 if input_tokens > 0 and request_total_chars > 0:
                     update_chars_per_token(request_total_chars, input_tokens)

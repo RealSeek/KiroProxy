@@ -52,9 +52,9 @@ def parse_event_stream(raw: bytes) -> str:
     return _default_provider.parse_response_text(raw)
 
 
-def parse_event_stream_full(raw: bytes) -> dict:
+def parse_event_stream_full(raw: bytes, model: str = "") -> dict:
     """解析 AWS event-stream 格式，返回完整结构"""
-    return _default_provider.parse_response(raw)
+    return _default_provider.parse_response(raw, model=model)
 
 
 def is_quota_exceeded_error(status_code: int, error_text: str) -> bool:
