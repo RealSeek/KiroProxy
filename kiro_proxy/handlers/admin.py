@@ -214,7 +214,7 @@ async def scan_tokens():
                         # 检查是否已添加
                         already_added = any(a.token_path == str(f) for a in state.accounts)
                         
-                        auth_method = data.get("authMethod", "social")
+                        auth_method = data.get("authMethod", "social").lower()
                         client_id_hash = data.get("clientIdHash")
                         
                         # 检查 IdC 配置完整性
