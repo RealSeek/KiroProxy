@@ -87,12 +87,11 @@ def map_model_name(model: str) -> str:
 def get_context_window_size(model: str) -> int:
     """根据模型名称获取上下文窗口大小
 
-    - Opus 4.6 和 Sonnet 4.6 系列: 1,000,000 tokens
+    复用 map_model_name 映射结果，确保与模型映射逻辑一致。
+    - Opus 4.6 和 Sonnet 4.6: 1,000,000 tokens
     - 其他模型: 200,000 tokens
     """
-    model_lower = model.lower()
-    if ("opus" in model_lower or "sonnet" in model_lower) and (
-        "4.6" in model_lower or "4-6" in model_lower
-    ):
+    mapped = map_model_name(model)
+    if mapped in ("claude-opus-4.6", "claude-sonnet-4.6"):
         return 1_000_000
     return 200_000
