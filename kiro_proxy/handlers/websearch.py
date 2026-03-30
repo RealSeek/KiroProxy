@@ -117,12 +117,12 @@ def _generate_random_lower_alnum(length: int) -> str:
     return "".join(secrets.choice(charset) for _ in range(length))
 
 
-def build_mcp_headers(token: str, machine_id: str) -> dict:
+def build_mcp_headers(token: str, machine_id: str, profile_arn: str = None) -> dict:
     """构建 MCP API 专用请求头（不含 kiro-agent-mode / codewhisperer-optout）"""
     kiro_version = get_kiro_version()
     os_name, node_version = get_system_info()
 
-    return {
+    headers = {
         "content-type": "application/json",
         "x-amz-user-agent": f"aws-sdk-js/1.0.27 KiroIDE-{kiro_version}-{machine_id}",
         "user-agent": (
@@ -135,6 +135,9 @@ def build_mcp_headers(token: str, machine_id: str) -> dict:
         "Authorization": f"Bearer {token}",
         "Connection": "close",
     }
+    if profile_arn:
+        headers["x-amzn-kiro-profile-arn"] = profile_arn
+    return headers
 
 
 async def call_mcp_web_search(
@@ -142,6 +145,7 @@ async def call_mcp_web_search(
     token: str,
     machine_id: str,
     region: str = "us-east-1",
+    profile_arn: str = None,
 ) -> Tuple[bool, dict]:
     """调用 MCP API 执行 web_search
 
@@ -167,7 +171,7 @@ async def call_mcp_web_search(
     }
 
     # MCP 专用 headers（不含 agent-mode / optout，含 host）
-    headers = build_mcp_headers(token, machine_id)
+    headers = build_mcp_headers(token, machine_id, profile_arn=profile_arn)
     mcp_domain = f"q.{region}.amazonaws.com"
     headers["host"] = mcp_domain
 
@@ -300,6 +304,7 @@ async def handle_web_search_request(
     machine_id: str,
     model: str,
     region: str = "us-east-1",
+    profile_arn: str = None,
 ) -> StreamingResponse:
     """处理包含 web_search 的请求，返回 Anthropic 格式的流式响应"""
 
@@ -339,7 +344,7 @@ async def handle_web_search_request(
         yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":1}}\n\n'
 
         # 调用 MCP API 执行搜索
-        success, result = await call_mcp_web_search(query, token, machine_id, region=region)
+        success, result = await call_mcp_web_search(query, token, machine_id, region=region, profile_arn=profile_arn)
 
         if success:
             search_results = parse_mcp_search_results(result)
