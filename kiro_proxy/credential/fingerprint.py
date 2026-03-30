@@ -87,7 +87,7 @@ def get_kiro_version() -> str:
             except Exception:
                 pass
     
-    return "0.10.0"
+    return "0.11.107"
 
 
 def get_system_info() -> tuple:
@@ -119,5 +119,5 @@ def get_system_info() -> tuple:
     else:
         os_name = "other#1.0"
     
-    node_version = "20.18.0"
+    node_version = "22.22.0"
     return os_name, node_version
