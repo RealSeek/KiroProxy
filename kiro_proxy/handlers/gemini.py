@@ -20,7 +20,7 @@ from ..core.history_manager import (
 from ..core.error_handler import classify_error, ErrorType, format_error_log
 from ..core.rate_limiter import get_rate_limiter
 from ..kiro_api import build_headers, build_kiro_request, parse_event_stream, parse_event_stream_full, is_quota_exceeded_error
-from ..converters import convert_gemini_contents_to_kiro, convert_kiro_response_to_gemini, convert_gemini_tools_to_kiro
+from ..converters import convert_gemini_contents_to_kiro, convert_kiro_response_to_gemini, convert_gemini_tools_to_kiro, reverse_tool_name
 
 
 async def handle_generate_content(model_name: str, request: Request):
@@ -70,9 +70,12 @@ async def handle_generate_content(model_name: str, request: Request):
         print(f"[Gemini] 限速: {reason}")
         await asyncio.sleep(wait_seconds)
     
+    # 创建 tool name 映射表（用于缩短超过 63 字符的工具名称）
+    tool_name_map = {}
+
     # 转换消息格式
     user_content, history, tool_results, kiro_tools = convert_gemini_contents_to_kiro(
-        contents, system_instruction, model, tools, tool_config
+        contents, system_instruction, model, tools, tool_config, tool_name_map=tool_name_map
     )
     
     # 历史消息预处理
@@ -299,4 +302,4 @@ async def handle_generate_content(model_name: str, request: Request):
     ))
     
     # 使用转换函数生成 Gemini 格式响应
-    return convert_kiro_response_to_gemini(result, model)
+    return convert_kiro_response_to_gemini(result, model, tool_name_map)

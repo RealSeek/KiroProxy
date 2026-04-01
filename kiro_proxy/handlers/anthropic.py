@@ -33,6 +33,7 @@ from ..converters import (
     extract_images_from_content,
     extract_thinking_from_content,
     count_images_in_messages,
+    reverse_tool_name,
 )
 from .websearch import has_web_search_tool, handle_web_search_request, filter_web_search_tools
 
@@ -210,12 +211,15 @@ async def handle_messages(request: Request):
     while messages and messages[-1].get("role") == "assistant":
         messages = messages[:-1]
 
+    # 创建 tool name 映射表（用于缩短超过 63 字符的工具名称）
+    tool_name_map = {}
+
     # 转换消息格式
-    user_content, history, tool_results = convert_anthropic_messages_to_kiro(messages, system, thinking, output_config)
+    user_content, history, tool_results = convert_anthropic_messages_to_kiro(messages, system, thinking, output_config, tool_name_map=tool_name_map)
 
     # 历史消息预处理
     history_manager = HistoryManager(get_history_config(), cache_key=session_id)
-    
+
     # 检查是否需要智能摘要或错误重试预摘要
     async def api_caller(prompt: str) -> str:
         return await _call_kiro_for_summary(prompt, account, headers)
@@ -223,7 +227,7 @@ async def handle_messages(request: Request):
         history = await history_manager.pre_process_async(history, user_content, api_caller)
     else:
         history = history_manager.pre_process(history, user_content)
-    
+
     # 摘要/截断后再次修复历史交替和 toolUses/toolResults 配对
     from ..converters import fix_history_alternation
     history = fix_history_alternation(history)
@@ -241,7 +245,7 @@ async def handle_messages(request: Request):
             _, images = extract_images_from_content(last_msg.get("content", ""), get_image_config(), total_image_count)
 
     # 构建 Kiro 请求
-    kiro_tools = convert_anthropic_tools_to_kiro(tools) if tools else None
+    kiro_tools = convert_anthropic_tools_to_kiro(tools, tool_name_map) if tools else None
 
     # 验证当前请求的 tool_results 与 history 最后一条 assistant 的 toolUses 配对
     if tool_results and history:
@@ -276,12 +280,12 @@ async def handle_messages(request: Request):
     kiro_request = build_kiro_request(user_content, model, history, kiro_tools, images, tool_results)
     
     if stream:
-        return await _handle_stream(kiro_request, headers, account, model, log_id, start_time, session_id, flow_id, history, user_content, kiro_tools, images, tool_results, history_manager)
+        return await _handle_stream(kiro_request, headers, account, model, log_id, start_time, session_id, flow_id, history, user_content, kiro_tools, images, tool_results, history_manager, tool_name_map)
     else:
-        return await _handle_non_stream(kiro_request, headers, account, model, log_id, start_time, session_id, flow_id, history, user_content, kiro_tools, images, tool_results, history_manager)
+        return await _handle_non_stream(kiro_request, headers, account, model, log_id, start_time, session_id, flow_id, history, user_content, kiro_tools, images, tool_results, history_manager, tool_name_map)
 
 
-async def _handle_stream(kiro_request, headers, account, model, log_id, start_time, session_id=None, flow_id=None, history=None, user_content="", kiro_tools=None, images=None, tool_results=None, history_manager=None):
+async def _handle_stream(kiro_request, headers, account, model, log_id, start_time, session_id=None, flow_id=None, history=None, user_content="", kiro_tools=None, images=None, tool_results=None, history_manager=None, tool_name_map=None):
     """Handle streaming responses with auto-retry on quota exceeded and network errors."""
 
     async def generate():
@@ -651,7 +655,8 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                                         ensure_ascii=False,
                                         separators=(",", ":")
                                     )
-                                yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"tool_use","id":"{tool_use["id"]}","name":"{tool_use["name"]}","input":{{}}}}}}\n\n'
+                                original_name = reverse_tool_name(tool_use["name"], tool_name_map or {})
+                                yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"tool_use","id":"{tool_use["id"]}","name":"{original_name}","input":{{}}}}}}\n\n'
                                 yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"input_json_delta","partial_json":{json.dumps(partial_json)}}}}}\n\n'
                                 yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":{block_index}}}\n\n'
                                 block_index += 1
@@ -728,7 +733,7 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-async def _handle_non_stream(kiro_request, headers, account, model, log_id, start_time, session_id=None, flow_id=None, history=None, user_content="", kiro_tools=None, images=None, tool_results=None, history_manager=None):
+async def _handle_non_stream(kiro_request, headers, account, model, log_id, start_time, session_id=None, flow_id=None, history=None, user_content="", kiro_tools=None, images=None, tool_results=None, history_manager=None, tool_name_map=None):
     """Handle non-streaming responses with auto-retry on quota exceeded and network errors."""
     error_msg = None
     status_code = 200
@@ -836,7 +841,7 @@ async def _handle_non_stream(kiro_request, headers, account, model, log_id, star
                         ),
                     )
 
-                return convert_kiro_response_to_anthropic(result, model, f"msg_{log_id}")
+                return convert_kiro_response_to_anthropic(result, model, f"msg_{log_id}", tool_name_map)
 
         except HTTPException:
             raise
@@ -983,8 +988,11 @@ async def handle_messages_cc(request: Request):
     while messages and messages[-1].get("role") == "assistant":
         messages = messages[:-1]
 
+    # 创建 tool name 映射表（用于缩短超过 63 字符的工具名称）
+    tool_name_map = {}
+
     # 转换消息格式
-    user_content, history, tool_results = convert_anthropic_messages_to_kiro(messages, system, thinking, output_config)
+    user_content, history, tool_results = convert_anthropic_messages_to_kiro(messages, system, thinking, output_config, tool_name_map=tool_name_map)
 
     # 历史消息预处理
     # Claude Code 客户端拥有自己的上下文管理能力（基于准确的 input_tokens）
@@ -1006,7 +1014,7 @@ async def handle_messages_cc(request: Request):
             _, images = extract_images_from_content(last_msg.get("content", ""), get_image_config(), total_image_count)
 
     # 构建 Kiro 请求
-    kiro_tools = convert_anthropic_tools_to_kiro(tools) if tools else None
+    kiro_tools = convert_anthropic_tools_to_kiro(tools, tool_name_map) if tools else None
 
     # 验证当前请求的 tool_results 与 history 最后一条 assistant 的 toolUses 配对
     if tool_results and history:
@@ -1040,12 +1048,12 @@ async def handle_messages_cc(request: Request):
     kiro_request = build_kiro_request(user_content, model, history, kiro_tools, images, tool_results)
 
     if stream:
-        return await _handle_stream_cc(kiro_request, headers, account, model, log_id, start_time, session_id, flow_id, history, user_content, kiro_tools, images, tool_results, history_manager)
+        return await _handle_stream_cc(kiro_request, headers, account, model, log_id, start_time, session_id, flow_id, history, user_content, kiro_tools, images, tool_results, history_manager, tool_name_map)
     else:
-        return await _handle_non_stream_cc(kiro_request, headers, account, model, log_id, start_time, session_id, flow_id, history, user_content, kiro_tools, images, tool_results, history_manager)
+        return await _handle_non_stream_cc(kiro_request, headers, account, model, log_id, start_time, session_id, flow_id, history, user_content, kiro_tools, images, tool_results, history_manager, tool_name_map)
 
 
-async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start_time, session_id=None, flow_id=None, history=None, user_content="", kiro_tools=None, images=None, tool_results=None, history_manager=None):
+async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start_time, session_id=None, flow_id=None, history=None, user_content="", kiro_tools=None, images=None, tool_results=None, history_manager=None, tool_name_map=None):
     """处理流式响应 - 缓冲模式
 
     与普通流式处理不同，此函数会：
@@ -1276,7 +1284,8 @@ async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start
                                         ensure_ascii=False,
                                         separators=(",", ":")
                                     )
-                                yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"tool_use","id":"{tool_use["id"]}","name":"{tool_use["name"]}","input":{{}}}}}}\n\n'
+                                original_name = reverse_tool_name(tool_use["name"], tool_name_map or {})
+                                yield f'event: content_block_start\ndata: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"tool_use","id":"{tool_use["id"]}","name":"{original_name}","input":{{}}}}}}\n\n'
                                 yield f'event: content_block_delta\ndata: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"input_json_delta","partial_json":{json.dumps(partial_json)}}}}}\n\n'
                                 yield f'event: content_block_stop\ndata: {{"type":"content_block_stop","index":{block_index}}}\n\n'
                                 block_index += 1
@@ -1349,7 +1358,7 @@ async def _handle_stream_cc(kiro_request, headers, account, model, log_id, start
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-async def _handle_non_stream_cc(kiro_request, headers, account, model, log_id, start_time, session_id=None, flow_id=None, history=None, user_content="", kiro_tools=None, images=None, tool_results=None, history_manager=None):
+async def _handle_non_stream_cc(kiro_request, headers, account, model, log_id, start_time, session_id=None, flow_id=None, history=None, user_content="", kiro_tools=None, images=None, tool_results=None, history_manager=None, tool_name_map=None):
     """处理非流式响应 - 使用 contextUsageEvent 计算准确的 input_tokens"""
     error_msg = None
     status_code = 200
@@ -1482,7 +1491,7 @@ async def _handle_non_stream_cc(kiro_request, headers, account, model, log_id, s
                     )
 
                 # 构建响应，使用准确的 input_tokens
-                return _build_anthropic_response_cc(result, model, f"msg_{log_id}", input_tokens, output_tokens)
+                return _build_anthropic_response_cc(result, model, f"msg_{log_id}", input_tokens, output_tokens, tool_name_map)
 
         except HTTPException:
             raise
@@ -1539,8 +1548,10 @@ async def _handle_non_stream_cc(kiro_request, headers, account, model, log_id, s
     raise HTTPException(503, "All retries exhausted")
 
 
-def _build_anthropic_response_cc(result: dict, model: str, msg_id: str, input_tokens: int, output_tokens: int) -> dict:
+def _build_anthropic_response_cc(result: dict, model: str, msg_id: str, input_tokens: int, output_tokens: int, tool_name_map: dict = None) -> dict:
     """构建 Anthropic 格式响应 - 使用准确的 token 数"""
+    if tool_name_map is None:
+        tool_name_map = {}
     content = []
 
     # 文本内容
@@ -1562,7 +1573,7 @@ def _build_anthropic_response_cc(result: dict, model: str, msg_id: str, input_to
         content.append({
             "type": "tool_use",
             "id": tool_use["id"],
-            "name": tool_use["name"],
+            "name": reverse_tool_name(tool_use["name"], tool_name_map),
             "input": tool_use["input"]
         })
 

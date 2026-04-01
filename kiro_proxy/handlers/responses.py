@@ -22,7 +22,7 @@ from ..core.history_manager import (
 from ..core.error_handler import classify_error, ErrorType, format_error_log
 from ..core.rate_limiter import get_rate_limiter
 from ..kiro_api import build_headers, build_kiro_request, parse_event_stream, parse_event_stream_full, is_quota_exceeded_error
-from ..converters import estimate_output_tokens, normalize_json_schema
+from ..converters import estimate_output_tokens, normalize_json_schema, map_tool_name, reverse_tool_name
 from ..converters import _process_and_collect_image
 
 
@@ -42,7 +42,7 @@ def _count_images_in_responses_input(input_data) -> int:
     return count
 
 
-def _convert_responses_input_to_kiro(input_data, instructions: str = None):
+def _convert_responses_input_to_kiro(input_data, instructions: str = None, tool_name_map: dict = None):
     """将 Responses API 的 input 转换为 Kiro 格式
     
     Codex 发送的 input 格式:
@@ -187,9 +187,12 @@ def _convert_responses_input_to_kiro(input_data, instructions: str = None):
             except:
                 args = {}
             
+            tu_name = item.get("name", "")
+            if tool_name_map is not None:
+                tu_name = map_tool_name(tu_name, tool_name_map)
             tool_use = {
                 "toolUseId": item.get("call_id", ""),
-                "name": item.get("name", ""),
+                "name": tu_name,
                 "input": args
             }
             
@@ -283,7 +286,7 @@ def _convert_responses_input_to_kiro(input_data, instructions: str = None):
     return user_content, history, tool_results, images
 
 
-def _convert_tools_to_kiro(tools: list) -> list:
+def _convert_tools_to_kiro(tools: list, tool_name_map: dict = None) -> list:
     """将 Responses API 的 tools 转换为 Kiro 格式
     
     Codex Responses API 工具格式:
@@ -319,6 +322,8 @@ def _convert_tools_to_kiro(tools: list) -> list:
     """
     if not tools:
         return None
+    if tool_name_map is None:
+        tool_name_map = {}
 
     kiro_tools = []
 
@@ -370,10 +375,13 @@ def _convert_tools_to_kiro(tools: list) -> list:
         if not name:
             continue
 
+        # 缩短超长工具名称
+        mapped_name = map_tool_name(name, tool_name_map)
+
         # 转换为 Kiro 格式
         kiro_tools.append({
             "toolSpecification": {
-                "name": name,
+                "name": mapped_name,
                 "description": description or f"Tool: {name}",
                 "inputSchema": {
                     "json": normalize_json_schema(parameters)
@@ -427,19 +435,22 @@ async def handle_responses(request: Request):
     if not can_request:
         await asyncio.sleep(wait_seconds)
     
-    user_content, history, tool_results, images = _convert_responses_input_to_kiro(input_data, instructions)
-    
+    # 创建 tool name 映射表（用于缩短超过 63 字符的工具名称）
+    tool_name_map = {}
+
+    user_content, history, tool_results, images = _convert_responses_input_to_kiro(input_data, instructions, tool_name_map)
+
     # 修复历史消息交替
     from ..converters import fix_history_alternation
     history = fix_history_alternation(history)
-    
+
     history_manager = HistoryManager(get_history_config(), cache_key=session_id)
-    
+
     # 对于 Responses API，强制启用自动截断（Codex CLI 的历史可能很长）
     from ..core.history_manager import TruncateStrategy
     if TruncateStrategy.AUTO_TRUNCATE not in history_manager.config.strategies:
         history_manager.config.strategies.append(TruncateStrategy.AUTO_TRUNCATE)
-    
+
     # 创建摘要 API 调用函数
     async def api_caller(prompt: str) -> str:
         req = build_kiro_request(prompt, "claude-haiku-4.5", [])
@@ -451,20 +462,20 @@ async def handle_responses(request: Request):
         except Exception as e:
             print(f"[Responses] Summary API 调用失败: {e}")
         return ""
-    
+
     # 检查是否需要智能摘要或错误重试预摘要
     if history_manager.should_summarize(history) or history_manager.should_pre_summary_for_error_retry(history, user_content):
         history = await history_manager.pre_process_async(history, user_content, api_caller)
     else:
         history = history_manager.pre_process(history, user_content)
-    
+
     # 摘要/截断后再次修复历史交替和 toolUses/toolResults 配对
     history = fix_history_alternation(history)
-    
+
     if history_manager.was_truncated:
         print(f"[Responses] {history_manager.truncate_info}")
-    
-    kiro_tools = _convert_tools_to_kiro(tools)
+
+    kiro_tools = _convert_tools_to_kiro(tools, tool_name_map)
 
     # 验证 tool_results 与 history 的一致性
     if tool_results and history:
@@ -537,8 +548,8 @@ async def handle_responses(request: Request):
         })
     
     if stream:
-        return await _handle_stream(kiro_request, headers, account, model, log_id, start_time, request_total_chars)
-    
+        return await _handle_stream(kiro_request, headers, account, model, log_id, start_time, request_total_chars, tool_name_map)
+
     # 非流式
     async with httpx.AsyncClient(verify=False, timeout=120) as client:
         resp = await client.post(get_kiro_api_url(account.get_region()), json=kiro_request, headers=headers)
@@ -555,14 +566,16 @@ async def handle_responses(request: Request):
         account.last_used = time.time()
         get_rate_limiter().record_request(account.id)
         
-        return _build_response(result, model, log_id)
+        return _build_response(result, model, log_id, tool_name_map)
 
 
-def _build_response(result: dict, model: str, response_id: str) -> dict:
+def _build_response(result: dict, model: str, response_id: str, tool_name_map: dict = None) -> dict:
     """构建非流式响应"""
+    if tool_name_map is None:
+        tool_name_map = {}
     text = "".join(result.get("content", []))
     output = []
-    
+
     if text:
         output.append({
             "type": "message",
@@ -570,13 +583,13 @@ def _build_response(result: dict, model: str, response_id: str) -> dict:
             "role": "assistant",
             "content": [{"type": "output_text", "text": text, "annotations": []}]
         })
-    
+
     for tool_use in result.get("tool_uses", []):
         output.append({
             "type": "function_call",
             "id": tool_use.get("id", f"call_{uuid.uuid4().hex[:12]}"),
             "call_id": tool_use.get("id", f"call_{uuid.uuid4().hex[:12]}"),
-            "name": tool_use.get("name", ""),
+            "name": reverse_tool_name(tool_use.get("name", ""), tool_name_map),
             "arguments": json.dumps(tool_use.get("input", {}))
         })
 
@@ -600,7 +613,7 @@ def _build_response(result: dict, model: str, response_id: str) -> dict:
     }
 
 
-async def _handle_stream(kiro_request, headers, account, model, log_id, start_time, request_total_chars: int):
+async def _handle_stream(kiro_request, headers, account, model, log_id, start_time, request_total_chars: int, tool_name_map: dict = None):
     """流式处理 - Codex 期望的 SSE 格式"""
 
     async def generate():
@@ -751,7 +764,7 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                 "type": "function_call",
                 "id": tool_item_id,
                 "call_id": tool_item_id,
-                "name": tool_use.get("name", ""),
+                "name": reverse_tool_name(tool_use.get("name", ""), tool_name_map or {}),
                 "arguments": json.dumps(tool_use.get("input", {}))
             }
             

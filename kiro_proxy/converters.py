@@ -19,6 +19,28 @@ from .core.history_manager import estimate_tokens_from_text
 
 # 常量
 MAX_TOOL_DESCRIPTION_LENGTH = 500
+TOOL_NAME_MAX_LEN = 63
+
+
+def shorten_tool_name(name: str) -> str:
+    """将超长 tool name 缩短为 prefix + '_' + 8位SHA256哈希，总长 <= 63"""
+    hash_suffix = hashlib.sha256(name.encode()).hexdigest()[:8]
+    prefix_len = TOOL_NAME_MAX_LEN - 1 - len(hash_suffix)  # 1 for '_'
+    return name[:prefix_len] + "_" + hash_suffix
+
+
+def map_tool_name(name: str, tool_name_map: Dict[str, str]) -> str:
+    """如果 tool name 超过 63 字符则缩短并记录映射，否则原样返回"""
+    if len(name) <= TOOL_NAME_MAX_LEN:
+        return name
+    short = shorten_tool_name(name)
+    tool_name_map[short] = name
+    return short
+
+
+def reverse_tool_name(name: str, tool_name_map: Dict[str, str]) -> str:
+    """通过映射表还原被缩短的 tool name"""
+    return tool_name_map.get(name, name)
 
 # 追加到 Write 工具 description 末尾的内容
 WRITE_TOOL_DESCRIPTION_SUFFIX = "- IMPORTANT: If the content to write exceeds 150 lines, you MUST only write the first 50 lines using this tool, then use `Edit` tool to append the remaining content in chunks of no more than 50 lines each. If needed, leave a unique placeholder to help append content. Do NOT attempt to write all content at once."
@@ -252,14 +274,17 @@ def truncate_description(desc: str, max_length: int = MAX_TOOL_DESCRIPTION_LENGT
 
 # ==================== Anthropic 转换 ====================
 
-def convert_anthropic_tools_to_kiro(tools: List[dict]) -> List[dict]:
+def convert_anthropic_tools_to_kiro(tools: List[dict], tool_name_map: Dict[str, str] = None) -> List[dict]:
     """将 Anthropic 工具格式转换为 Kiro 格式
 
     与 kiro.rs 保持一致：直接转换所有工具，不做过滤和数量限制。
     - 截断过长的描述（最多 10000 字符，与 kiro.rs 一致）
+    - 缩短超过 63 字符的工具名称（与 kiro.rs 一致）
     """
     if not tools:
         return []
+    if tool_name_map is None:
+        tool_name_map = {}
 
     kiro_tools = []
 
@@ -281,9 +306,12 @@ def convert_anthropic_tools_to_kiro(tools: List[dict]) -> List[dict]:
         if len(description) > 10000:
             description = description[:10000]
 
+        # 缩短超长工具名称
+        mapped_name = map_tool_name(name, tool_name_map)
+
         kiro_tools.append({
             "toolSpecification": {
-                "name": name,
+                "name": mapped_name,
                 "description": description,
                 "inputSchema": {
                     "json": normalize_json_schema(input_schema)
@@ -508,7 +536,7 @@ def generate_thinking_prefix(thinking: dict = None, output_config: dict = None) 
     return ""
 
 
-def convert_anthropic_messages_to_kiro(messages: List[dict], system="", thinking: dict = None, output_config: dict = None) -> Tuple[str, List[dict], List[dict]]:
+def convert_anthropic_messages_to_kiro(messages: List[dict], system="", thinking: dict = None, output_config: dict = None, tool_name_map: Dict[str, str] = None) -> Tuple[str, List[dict], List[dict]]:
     """将 Anthropic 消息格式转换为 Kiro 格式
 
     Args:
@@ -637,9 +665,12 @@ def convert_anthropic_messages_to_kiro(messages: List[dict], system="", thinking
                 for block in msg["content"]:
                     if isinstance(block, dict):
                         if block.get("type") == "tool_use":
+                            tu_name = block.get("name", "")
+                            if tool_name_map is not None:
+                                tu_name = map_tool_name(tu_name, tool_name_map)
                             tool_uses.append({
                                 "toolUseId": block.get("id", ""),
-                                "name": block.get("name", ""),
+                                "name": tu_name,
                                 "input": block.get("input", {})
                             })
                         elif block.get("type") == "text":
@@ -684,8 +715,10 @@ def convert_anthropic_messages_to_kiro(messages: List[dict], system="", thinking
     return user_content, history, current_tool_results
 
 
-def convert_kiro_response_to_anthropic(result: dict, model: str, msg_id: str) -> dict:
+def convert_kiro_response_to_anthropic(result: dict, model: str, msg_id: str, tool_name_map: Dict[str, str] = None) -> dict:
     """将 Kiro 响应转换为 Anthropic 格式"""
+    if tool_name_map is None:
+        tool_name_map = {}
     content = []
     text = "".join(result["content"])
 
@@ -699,8 +732,12 @@ def convert_kiro_response_to_anthropic(result: dict, model: str, msg_id: str) ->
     elif thinking_text and not result.get("tool_uses"):
         # only-thinking 场景：补空 text 块确保 content 数组完整
         content.append({"type": "text", "text": " "})
-    
+
     for tool_use in result["tool_uses"]:
+        # 还原被缩短的工具名称
+        if tool_name_map and tool_use.get("name"):
+            tool_use = dict(tool_use)
+            tool_use["name"] = reverse_tool_name(tool_use["name"], tool_name_map)
         content.append(tool_use)
     
     input_tokens = result.get("input_tokens") or 0
@@ -732,8 +769,10 @@ def is_tool_choice_required(tool_choice) -> bool:
     return False
 
 
-def convert_openai_tools_to_kiro(tools: List[dict]) -> List[dict]:
+def convert_openai_tools_to_kiro(tools: List[dict], tool_name_map: Dict[str, str] = None) -> List[dict]:
     """将 OpenAI 工具格式转换为 Kiro 格式"""
+    if tool_name_map is None:
+        tool_name_map = {}
     kiro_tools = []
 
     for tool in tools:
@@ -769,9 +808,12 @@ def convert_openai_tools_to_kiro(tools: List[dict]) -> List[dict]:
             description = description[:10000]
         parameters = func.get("parameters", {"type": "object", "properties": {}})
 
+        # 缩短超长工具名称
+        mapped_name = map_tool_name(name, tool_name_map)
+
         kiro_tools.append({
             "toolSpecification": {
-                "name": name,
+                "name": mapped_name,
                 "description": description,
                 "inputSchema": {
                     "json": normalize_json_schema(parameters)
@@ -783,10 +825,11 @@ def convert_openai_tools_to_kiro(tools: List[dict]) -> List[dict]:
 
 
 def convert_openai_messages_to_kiro(
-    messages: List[dict], 
+    messages: List[dict],
     model: str,
     tools: List[dict] = None,
-    tool_choice = None
+    tool_choice = None,
+    tool_name_map: Dict[str, str] = None
 ) -> Tuple[str, List[dict], List[dict], List[dict]]:
     """将 OpenAI 消息格式转换为 Kiro 格式
     
@@ -913,9 +956,12 @@ def convert_openai_messages_to_kiro(
                 except:
                     args = {}
                 
+                tc_name = func.get("name", "")
+                if tool_name_map is not None:
+                    tc_name = map_tool_name(tc_name, tool_name_map)
                 tool_uses.append({
                     "toolUseId": tc.get("id", ""),
-                    "name": func.get("name", ""),
+                    "name": tc_name,
                     "input": args
                 })
             
@@ -960,23 +1006,27 @@ def convert_openai_messages_to_kiro(
     history = fix_history_alternation(history, model)
     
     # 转换工具
-    kiro_tools = convert_openai_tools_to_kiro(tools) if tools else []
-    
+    if tool_name_map is None:
+        tool_name_map = {}
+    kiro_tools = convert_openai_tools_to_kiro(tools, tool_name_map) if tools else []
+
     return user_content, history, current_tool_results, kiro_tools
 
 
-def convert_kiro_response_to_openai(result: dict, model: str, msg_id: str) -> dict:
+def convert_kiro_response_to_openai(result: dict, model: str, msg_id: str, tool_name_map: Dict[str, str] = None) -> dict:
     """将 Kiro 响应转换为 OpenAI 格式"""
+    if tool_name_map is None:
+        tool_name_map = {}
     text = "".join(result["content"])
     tool_calls = []
-    
+
     for tool_use in result.get("tool_uses", []):
         if tool_use.get("type") == "tool_use":
             tool_calls.append({
                 "id": tool_use.get("id", ""),
                 "type": "function",
                 "function": {
-                    "name": tool_use.get("name", ""),
+                    "name": reverse_tool_name(tool_use.get("name", ""), tool_name_map),
                     "arguments": json.dumps(tool_use.get("input", {}))
                 }
             })
@@ -1018,7 +1068,7 @@ def convert_kiro_response_to_openai(result: dict, model: str, msg_id: str) -> di
 
 # ==================== Gemini 转换 ====================
 
-def convert_gemini_tools_to_kiro(tools: List[dict]) -> List[dict]:
+def convert_gemini_tools_to_kiro(tools: List[dict], tool_name_map: Dict[str, str] = None) -> List[dict]:
     """将 Gemini 工具格式转换为 Kiro 格式
 
     Gemini 工具格式：
@@ -1032,6 +1082,8 @@ def convert_gemini_tools_to_kiro(tools: List[dict]) -> List[dict]:
         ]
     }
     """
+    if tool_name_map is None:
+        tool_name_map = {}
     kiro_tools = []
 
     for tool in tools:
@@ -1056,9 +1108,12 @@ def convert_gemini_tools_to_kiro(tools: List[dict]) -> List[dict]:
                 description = description[:10000]
             parameters = func.get("parameters", {"type": "object", "properties": {}})
 
+            # 缩短超长工具名称
+            mapped_name = map_tool_name(name, tool_name_map)
+
             kiro_tools.append({
                 "toolSpecification": {
-                    "name": name,
+                    "name": mapped_name,
                     "description": description,
                     "inputSchema": {
                         "json": normalize_json_schema(parameters)
@@ -1070,11 +1125,12 @@ def convert_gemini_tools_to_kiro(tools: List[dict]) -> List[dict]:
 
 
 def convert_gemini_contents_to_kiro(
-    contents: List[dict], 
-    system_instruction: dict, 
+    contents: List[dict],
+    system_instruction: dict,
     model: str,
     tools: List[dict] = None,
-    tool_config: dict = None
+    tool_config: dict = None,
+    tool_name_map: Dict[str, str] = None
 ) -> Tuple[str, List[dict], List[dict], List[dict]]:
     """将 Gemini 消息格式转换为 Kiro 格式
     
@@ -1119,9 +1175,12 @@ def convert_gemini_contents_to_kiro(
             elif "functionCall" in part:
                 # Gemini 的工具调用
                 fc = part["functionCall"]
+                fc_name = fc.get("name", "")
+                if tool_name_map is not None:
+                    fc_name = map_tool_name(fc_name, tool_name_map)
                 tool_calls.append({
                     "toolUseId": fc.get("name", "") + "_" + str(i),  # Gemini 没有 ID，生成一个
-                    "name": fc.get("name", ""),
+                    "name": fc_name,
                     "input": fc.get("args", {})
                 })
             elif "functionResponse" in part:
@@ -1249,28 +1308,32 @@ def convert_gemini_contents_to_kiro(
         history = history[:-1]
     
     # 转换工具
-    kiro_tools = convert_gemini_tools_to_kiro(tools) if tools else []
-    
+    if tool_name_map is None:
+        tool_name_map = {}
+    kiro_tools = convert_gemini_tools_to_kiro(tools, tool_name_map) if tools else []
+
     return user_content, history, current_tool_results, kiro_tools
 
 
-def convert_kiro_response_to_gemini(result: dict, model: str) -> dict:
+def convert_kiro_response_to_gemini(result: dict, model: str, tool_name_map: Dict[str, str] = None) -> dict:
     """将 Kiro 响应转换为 Gemini 格式"""
+    if tool_name_map is None:
+        tool_name_map = {}
     text = "".join(result.get("content", []))
     tool_uses = result.get("tool_uses", [])
-    
+
     parts = []
-    
+
     # 添加文本部分
     if text:
         parts.append({"text": text})
-    
+
     # 添加工具调用
     for tool_use in tool_uses:
         if tool_use.get("type") == "tool_use":
             parts.append({
                 "functionCall": {
-                    "name": tool_use.get("name", ""),
+                    "name": reverse_tool_name(tool_use.get("name", ""), tool_name_map),
                     "args": tool_use.get("input", {})
                 }
             })

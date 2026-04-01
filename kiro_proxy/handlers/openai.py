@@ -33,6 +33,7 @@ from ..converters import (
     extract_images_from_content,
     estimate_output_tokens,
     count_images_in_messages,
+    reverse_tool_name,
 )
 
 
@@ -84,11 +85,14 @@ async def handle_chat_completions(request: Request):
         print(f"[OpenAI] 限速: {reason}")
         await asyncio.sleep(wait_seconds)
     
+    # 创建 tool name 映射表（用于缩短超过 63 字符的工具名称）
+    tool_name_map = {}
+
     # 使用增强的转换函数
     user_content, history, tool_results, kiro_tools = convert_openai_messages_to_kiro(
-        messages, model, tools, tool_choice
+        messages, model, tools, tool_choice, tool_name_map=tool_name_map
     )
-    
+
     # 历史消息预处理
     history_manager = HistoryManager(get_history_config(), cache_key=session_id)
     
